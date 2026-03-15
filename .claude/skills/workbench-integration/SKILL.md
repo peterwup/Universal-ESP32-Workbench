@@ -353,7 +353,7 @@ Replace `## 7. Operational Procedures` in the FSD with workbench-specific
 operational content. This section becomes a standalone **operations guide** — how
 to interact with the device through the workbench. It contains no test cases.
 
-If the fsd-writer left a generic Section 7, replace it entirely. The workbench
+If the esp32-fsd-writer left a generic Section 7, replace it entirely. The workbench
 operations are the operational procedures for this project.
 
 #### 8a. Hardware setup
@@ -452,7 +452,7 @@ Replace `## 8. Verification & Validation` in the FSD with workbench test cases.
 This section contains **only test cases** — verification tables with pass/fail
 criteria. It does not repeat operational procedures from Section 7.
 
-If the fsd-writer left a generic Section 8 with a traceability matrix, preserve
+If the esp32-fsd-writer left a generic Section 8 with a traceability matrix, preserve
 the traceability matrix (Section 8.4) and replace the phase verification tables
 (Sections 8.1, 8.2, 8.3) with workbench-specific test procedures.
 
