@@ -604,15 +604,16 @@ patterns, then pull in the matching test specs from `references/`.
 
 | Feature | Detection Patterns | Test Spec | Include |
 |---------|-------------------|-----------|---------|
-| **WiFi STA** | `WiFi.begin`, `esp_wifi_connect`, "STA mode" | `wifi-test-spec.md` | WIFI-001–007, EC-110–115 |
-| **WiFi AP** | `WiFi.softAP`, "captive portal", "AP mode" | `wifi-test-spec.md` | AP-001–006, TC-300 |
-| **MQTT** | `PubSubClient`, `esp_mqtt`, "MQTT broker" | `wifi-test-spec.md` | WIFI-006, EC-101, EC-118 |
+| **WiFi STA** | `WiFi.begin`, `esp_wifi_connect`, "STA mode" | `wifi-test-spec.md` | WIFI-001–005, EC-100–101, EC-110–111, EC-115 |
+| **Captive Portal** | `WiFi.softAP`, "captive portal", "AP mode" | `captive-portal-test-spec.md` | AP-001–006, CP-001–006, TC-CP-100–102 |
+| **MQTT** | `PubSubClient`, `esp_mqtt`, "MQTT broker" | `mqtt-test-spec.md` | MQTT-001–031, TC-MQTT-100–103 |
 | **BLE** | `NimBLE`, `esp_ble`, `BLEDevice`, "BLE", "GATT" | `ble-test-spec.md` | BLE-001–032, TC-BLE-100–103 |
 | **BLE NUS** | `NUS`, `6E400001`, "Nordic UART" | `ble-test-spec.md` | BLE-020–023, TC-BLE-101 |
 | **OTA** | `esp_ota`, `httpUpdate`, "firmware update", "OTA" | `ota-test-spec.md` | OTA-001–013, TC-OTA-100–102 |
 | **USB HID** | `tinyusb`, `tusb_`, "HID", "keyboard", "USB device" | `usb-hid-test-spec.md` | HID-001–022, TC-HID-100–103 |
 | **NVS** | `Preferences`, `nvs_`, "NVS", "stored credentials" | `nvs-test-spec.md` | NVS-001–024, TC-NVS-100–103 |
-| **Watchdog** | `esp_task_wdt`, `TWDT`, "watchdog" | `wifi-test-spec.md` | EC-116–120 |
+| **Watchdog** | `esp_task_wdt`, `TWDT`, "watchdog" | `watchdog-test-spec.md` | WDT-001–022, TC-WDT-100–102 |
+| **Logging** | `ESP_LOG`, `udp_log`, "UDP logging", "serial log" | `logging-test-spec.md` | LOG-001–026, TC-LOG-100–103 |
 | **Ethernet** | `W5500`, `ETH.begin`, "dual network" | `wifi-test-spec.md` | TEST-001–005, EC-100 |
 
 ### Workflow
@@ -627,8 +628,12 @@ patterns, then pull in the matching test specs from `references/`.
 
 | File | Coverage |
 |------|----------|
-| [references/wifi-test-spec.md](references/wifi-test-spec.md) | WiFi STA/AP, MQTT, captive portal, OTA via WiFi, watchdog, ethernet |
+| [references/wifi-test-spec.md](references/wifi-test-spec.md) | WiFi STA connection, signal, DHCP, ethernet test mode |
+| [references/captive-portal-test-spec.md](references/captive-portal-test-spec.md) | AP mode, captive portal, provisioning, credential change |
+| [references/mqtt-test-spec.md](references/mqtt-test-spec.md) | Broker connection, pub/sub, QoS, LWT, reconnect, buffering |
 | [references/ble-test-spec.md](references/ble-test-spec.md) | BLE advertising, GATT, NUS, pairing, coexistence |
 | [references/ota-test-spec.md](references/ota-test-spec.md) | OTA download, rollback, integrity, power loss recovery |
 | [references/usb-hid-test-spec.md](references/usb-hid-test-spec.md) | USB enumeration, keyboard layouts, latency, stuck key prevention |
 | [references/nvs-test-spec.md](references/nvs-test-spec.md) | Config persistence, factory reset, corruption recovery, credentials |
+| [references/watchdog-test-spec.md](references/watchdog-test-spec.md) | Software/hardware WDT, memory watchdog, false trigger prevention |
+| [references/logging-test-spec.md](references/logging-test-spec.md) | Serial logging, UDP logging, log levels, crash capture |
