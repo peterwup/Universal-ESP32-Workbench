@@ -1,5 +1,5 @@
 ---
-name: workbench-test
+name: workbench-test-runner
 description: Test automation support — test progress tracking, human interaction requests, and activity log. Triggers on "test progress", "test session", "human interaction", "operator", "activity log", "test tracking".
 ---
 
