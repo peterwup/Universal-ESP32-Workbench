@@ -99,8 +99,6 @@ Mode is switched via `POST /api/wifi/mode` or the web UI toggle.
 | wifi_controller.py | /usr/local/bin/wifi_controller.py | WiFi instrument backend (AP, STA, scan, relay, events) |
 | ble_controller.py | /usr/local/bin/ble_controller.py | BLE proxy backend (scan, connect, write GATT characteristics via bleak) |
 | plain_rfc2217_server.py | /usr/local/bin/plain_rfc2217_server.py | RFC2217 server with direct DTR/RTS passthrough (all devices) |
-| ~~esp_rfc2217_server.py~~ | removed | Deprecated — breaks C3 native USB and classic ESP32 over RFC2217 |
-| ~~serial_proxy.py~~ | removed | Deprecated — replaced by plain_rfc2217_server.py |
 | rfc2217-udev-notify.sh | /usr/local/bin/rfc2217-udev-notify.sh | Posts udev events to portal API |
 | wifi-lease-notify.sh | /usr/local/bin/wifi-lease-notify.sh | Posts dnsmasq DHCP lease events to portal API |
 | rfc2217-learn-slots | /usr/local/bin/rfc2217-learn-slots | Slot configuration helper |
@@ -292,8 +290,6 @@ Configuration file: `/etc/rfc2217/slots.json`
 
 ### FR-004 — Serial Traffic Logging
 
-- Removed.  `serial_proxy.py` (which provided traffic logging) has been
-  deprecated in favour of `plain_rfc2217_server.py`.
 - Serial traffic is observable via RFC2217 clients (e.g. pyserial).
 
 ### FR-005 — Web Portal (Serial Section)
@@ -332,12 +328,8 @@ The portal uses `plain_rfc2217_server.py` for **all** device types:
 | `/dev/ttyACM*` | Native USB (CDC ACM) | `plain_rfc2217_server.py` |
 | `/dev/ttyUSB*` | UART bridge (CP2102/CH340) | `plain_rfc2217_server.py` |
 
-**Why not `esp_rfc2217_server.py`?**  Espressif's `EspPortManager` intercepts
-DTR/RTS and replaces them with its own reset sequence (`ClassicReset` /
-`HardReset`) in a separate thread.  This breaks ESP32-C3 native USB, and
-testing confirmed it also fails for classic ESP32 UART bridges over RFC2217.
-`plain_rfc2217_server.py` passes DTR/RTS directly — esptool on the client
-side already implements the correct reset sequences for each chip type.
+`plain_rfc2217_server.py` passes DTR/RTS directly to the serial port — esptool
+on the client side implements the correct reset sequences for each chip type.
 
 #### 6.3 Controlled Boot Sequence (plain_rfc2217_server.py)
 
@@ -1963,8 +1955,6 @@ Add this to /etc/rfc2217/slots.json:
 | `wifi_controller.py` | WiFi instrument backend (hostapd, dnsmasq, wpa_supplicant, iw, HTTP relay) |
 | `ble_controller.py` | BLE proxy backend (bleak, scan, connect, write to GATT characteristics) |
 | `plain_rfc2217_server.py` | RFC2217 server with direct DTR/RTS passthrough (all devices) |
-| ~~`esp_rfc2217_server.py`~~ | Removed — breaks C3 native USB and classic ESP32 over RFC2217 |
-| ~~`serial_proxy.py`~~ | Removed — replaced by plain_rfc2217_server.py |
 | `rfc2217-udev-notify.sh` | Posts udev events to portal API via curl |
 | `wifi-lease-notify.sh` | Posts dnsmasq DHCP lease events to portal API |
 | `rfc2217-learn-slots` | CLI tool to discover slot_key for physical connectors |
