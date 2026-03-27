@@ -31,6 +31,31 @@ if [ "$UPDATE_ONLY" = false ]; then
 
     # Python packages not available via apt
     pip3 install esptool bleak --break-system-packages 2>/dev/null || true
+
+    # OpenOCD for ESP32 (GDB debug support)
+    if ! command -v openocd-esp32 >/dev/null 2>&1; then
+        echo "Installing openocd-esp32..."
+        ARCH=$(uname -m)
+        case "$ARCH" in
+            aarch64) OCD_ARCH="arm64" ;;
+            armv7l|armv6l) OCD_ARCH="armhf" ;;
+            x86_64) OCD_ARCH="amd64" ;;
+            *) echo "WARNING: unsupported arch $ARCH for openocd-esp32, skipping"; OCD_ARCH="" ;;
+        esac
+        if [ -n "$OCD_ARCH" ]; then
+            OCD_VER="v0.12.0-esp32-20260304"
+            OCD_URL="https://github.com/espressif/openocd-esp32/releases/download/${OCD_VER}/openocd-esp32-linux-${OCD_ARCH}-0.12.0-esp32-20260304.tar.gz"
+            wget -q "$OCD_URL" -O /tmp/openocd-esp32.tar.gz
+            tar xzf /tmp/openocd-esp32.tar.gz -C /tmp/
+            cp /tmp/openocd-esp32/bin/openocd /usr/local/bin/openocd-esp32
+            mkdir -p /usr/local/share/openocd-esp32
+            cp -r /tmp/openocd-esp32/share/openocd/scripts /usr/local/share/openocd-esp32/scripts
+            rm -rf /tmp/openocd-esp32 /tmp/openocd-esp32.tar.gz
+            echo "openocd-esp32 installed: $(openocd-esp32 --version 2>&1 | head -1)"
+        fi
+    else
+        echo "openocd-esp32 already installed, skipping..."
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -60,6 +85,7 @@ cp "$SCRIPT_DIR/portal.py"                  /usr/local/bin/rfc2217-portal
 cp "$SCRIPT_DIR/plain_rfc2217_server.py"    /usr/local/bin/plain_rfc2217_server.py
 cp "$SCRIPT_DIR/wifi_controller.py"         /usr/local/bin/wifi_controller.py
 cp "$SCRIPT_DIR/ble_controller.py"          /usr/local/bin/ble_controller.py
+cp "$SCRIPT_DIR/cw_beacon.py"              /usr/local/bin/cw_beacon.py
 cp "$SCRIPT_DIR/mqtt_controller.py"         /usr/local/bin/mqtt_controller.py
 cp "$SCRIPT_DIR/sniffer.py"                 /usr/local/bin/sniffer.py
 cp "$SCRIPT_DIR/rfc2217-learn-slots"        /usr/local/bin/rfc2217-learn-slots
@@ -103,6 +129,14 @@ fi
 echo "Installing systemd service and udev rules..."
 cp "$SCRIPT_DIR/systemd/rfc2217-portal.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/udev/99-rfc2217-hotplug.rules" /etc/udev/rules.d/
+
+# OpenOCD udev rules (Espressif USB JTAG + FTDI debug probes)
+cat > /etc/udev/rules.d/60-openocd.rules << 'RULES'
+# Espressif USB-Serial/JTAG (ESP32-C3, S3, C6, H2, etc.)
+ATTRS{idVendor}=="303a", MODE="0666", GROUP="plugdev"
+# FTDI devices (ESP-Prog, FT2232H, FT232H)
+ATTRS{idVendor}=="0403", MODE="0666", GROUP="plugdev"
+RULES
 
 systemctl daemon-reload
 udevadm control --reload-rules

@@ -2732,7 +2732,7 @@ Add this to /etc/rfc2217/slots.json:
 - [x] TASK-124: Implement WT-1300–1304 CW beacon test cases
 
 **GDB Debug: USB JTAG (v8.0):**
-- [ ] TASK-130: Install esp-openocd (aarch64) on Pi
+- [x] TASK-130: Install esp-openocd (aarch64) on Pi
 - [ ] TASK-131: Add `Debugging` state to slot state machine
 - [ ] TASK-132: Implement `POST /api/debug/start` and `POST /api/debug/stop`
 - [ ] TASK-133: Implement `GET /api/debug/status`
