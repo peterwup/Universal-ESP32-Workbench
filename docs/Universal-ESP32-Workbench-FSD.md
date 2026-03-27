@@ -2792,12 +2792,12 @@ Add this to /etc/rfc2217/slots.json:
 
 **GDB Debug: USB JTAG (v8.0):**
 - [x] TASK-130: Install esp-openocd (aarch64) on Pi
-- [ ] TASK-131: Add `Debugging` state to slot state machine
-- [ ] TASK-132: Implement `POST /api/debug/start` and `POST /api/debug/stop`
-- [ ] TASK-133: Implement `GET /api/debug/status`
-- [ ] TASK-134: Suppress hotplug proxy restarts during `Debugging` state
-- [ ] TASK-135: Add `gdb_port` and `openocd_telnet_port` to slots.json schema
-- [ ] TASK-136: Add `debug_start/stop/status()` methods to driver
+- [x] TASK-131: Add `Debugging` state to slot state machine
+- [x] TASK-132: Implement `POST /api/debug/start` and `POST /api/debug/stop`
+- [x] TASK-133: Implement `GET /api/debug/status`
+- [x] TASK-134: Suppress hotplug proxy restarts during `Debugging` state
+- [x] TASK-135: Add `gdb_port` and `openocd_telnet_port` to slots.json schema
+- [x] TASK-136: Add `debug_start/stop/status()` methods to driver
 - [ ] TASK-137: Implement WT-1400–1406 USB JTAG debug test cases
 
 **GDB Debug: Dual-USB (v8.0):**
