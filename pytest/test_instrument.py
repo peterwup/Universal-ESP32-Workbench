@@ -339,3 +339,69 @@ class TestWiFiScan:
         status = wifi_tester.ap_status()
         assert status["active"] is True
         wifi_tester.ap_stop()
+
+
+# =====================================================================
+# WT-13xx  CW Beacon
+# =====================================================================
+
+
+class TestCWBeacon:
+    """WT-13xx: CW beacon (GPCLK Morse transmitter) tests."""
+
+    def test_wt1300_start_and_status(self, wifi_tester):
+        """WT-1300: Start beacon and verify status shows active."""
+        result = wifi_tester.cw_start(
+            freq=3_571_000, message="VVV", wpm=15)
+        assert result["pin"] == 5
+        assert result["divider"] == 140
+        assert abs(result["freq_hz"] - 3_571_428.57) < 1
+        assert result["message"] == "VVV"
+        assert result["wpm"] == 15
+        assert result["repeat"] is True
+
+        status = wifi_tester.cw_status()
+        assert status["active"] is True
+        assert status["pin"] == 5
+        assert status["freq_hz"] == result["freq_hz"]
+
+        wifi_tester.cw_stop()
+
+    def test_wt1301_stop(self, wifi_tester):
+        """WT-1301: Stop beacon and verify status shows inactive."""
+        wifi_tester.cw_start(freq=3_571_000, message="T", wpm=20)
+        wifi_tester.cw_stop()
+
+        status = wifi_tester.cw_status()
+        assert status["active"] is False
+
+    def test_wt1302_frequency_list(self, wifi_tester):
+        """WT-1302: Frequency list returns valid entries in range."""
+        freqs = wifi_tester.cw_frequencies(low=3_500_000, high=4_000_000)
+        assert len(freqs) > 0
+        for f in freqs:
+            assert "divider" in f
+            assert "freq_hz" in f
+            assert 3_500_000 <= f["freq_hz"] <= 4_000_000
+            assert 2 <= f["divider"] <= 4095
+        # Verify sorted by divider (ascending = freq descending)
+        dividers = [f["divider"] for f in freqs]
+        assert dividers == sorted(dividers)
+
+    def test_wt1303_invalid_pin_rejected(self, wifi_tester):
+        """WT-1303: Pin without GPCLK is rejected."""
+        with pytest.raises(CommandError):
+            wifi_tester.cw_start(freq=3_571_000, message="T", pin=17)
+
+    def test_wt1304_replaces_previous(self, wifi_tester):
+        """WT-1304: Starting a new beacon replaces the previous one."""
+        wifi_tester.cw_start(freq=3_571_000, message="AAA", wpm=10)
+        wifi_tester.cw_start(freq=3_597_000, message="BBB", wpm=20)
+
+        status = wifi_tester.cw_status()
+        assert status["active"] is True
+        assert status["message"] == "BBB"
+        assert status["wpm"] == 20
+        assert status["divider"] == 139  # 500MHz / 139 ≈ 3.597 MHz
+
+        wifi_tester.cw_stop()

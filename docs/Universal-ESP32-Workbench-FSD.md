@@ -2078,7 +2078,7 @@ Add this to /etc/rfc2217/slots.json:
 - [x] TASK-121: Add CW beacon API endpoints to portal.py (`/api/cw/start`, `stop`, `status`, `frequencies`)
 - [x] TASK-122: Add `cw_start/stop/status/frequencies()` methods to driver
 - [x] TASK-123: Deploy to Pi and verify API endpoints
-- [ ] TASK-124: Implement WT-1300–1304 CW beacon test cases
+- [x] TASK-124: Implement WT-1300–1304 CW beacon test cases
 
 ### C.2 Deliverables
 
