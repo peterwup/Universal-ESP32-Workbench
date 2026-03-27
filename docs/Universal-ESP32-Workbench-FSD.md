@@ -1493,10 +1493,12 @@ so the chip type **cannot** be determined from USB enumeration alone.
 However, the JTAG TAP ID read during OpenOCD's scan chain interrogation
 uniquely identifies the chip architecture:
 
-| JTAG TAP ID | Manufacturer | Architecture | Chip |
-|-------------|-------------|-------------|------|
-| `0x00005c25` | Espressif (`0x612`) | RISC-V single-core | ESP32-C3, C6, H2 |
-| `0x120034e5` | Tensilica (`0x272`) | Xtensa dual-core | ESP32-S3 |
+| JTAG TAP ID | Manufacturer | Architecture | Chip | Verified |
+|-------------|-------------|-------------|------|:---:|
+| `0x00005c25` | Espressif (`0x612`) | RISC-V single-core | ESP32-C3 | Yes |
+| `0x00010c25` | Espressif (`0x612`) | RISC-V single-core | ESP32-H2 | Yes |
+| `0x0000dc25` | Espressif (`0x612`) | RISC-V single-core | ESP32-C6 | — |
+| `0x120034e5` | Tensilica (`0x272`) | Xtensa dual-core | ESP32-S3 | Yes |
 
 **Auto-detection strategy:** The portal can attempt OpenOCD with a candidate
 config.  If the TAP ID mismatches, try the other config.  Alternatively,

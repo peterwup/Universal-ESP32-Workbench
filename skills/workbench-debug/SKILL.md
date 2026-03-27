@@ -69,10 +69,12 @@ USB interface layout (no kernel unbind needed):
 
 USB PID `303a:1001` is the same for C3 and S3. The JTAG TAP ID identifies the chip:
 
-| TAP ID | Chip | Architecture |
-|--------|------|-------------|
-| `0x00005c25` | ESP32-C3 (also C6, H2) | RISC-V single-core |
-| `0x120034e5` | ESP32-S3 | Xtensa dual-core |
+| TAP ID | Chip | Architecture | Config |
+|--------|------|-------------|--------|
+| `0x00005c25` | ESP32-C3 | RISC-V single-core | `esp32c3-builtin.cfg` |
+| `0x00010c25` | ESP32-H2 | RISC-V single-core | `esp32h2-builtin.cfg` |
+| `0x0000dc25` | ESP32-C6 | RISC-V single-core | `esp32c6-builtin.cfg` |
+| `0x120034e5` | ESP32-S3 | Xtensa dual-core | `esp32s3-builtin.cfg` |
 
 ### Start OpenOCD manually (for testing)
 
