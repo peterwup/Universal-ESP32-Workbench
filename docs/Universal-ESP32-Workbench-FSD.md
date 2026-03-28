@@ -279,7 +279,10 @@ Configuration file: `/etc/rfc2217/slots.json`
       "last_event_ts": "2026-02-05T12:34:56+00:00",
       "last_error": null,
       "flapping": false,
-      "state": "idle"
+      "state": "idle",
+      "debugging": false,
+      "debug_chip": null,
+      "debug_gdb_port": null
     }
   ],
   "host_ip": "esp32-workbench.local",
@@ -1731,6 +1734,28 @@ debug_server =
 debug_port = esp32-workbench.local:3333
 ```
 
+#### 24.13 Auto-Start on Hotplug
+
+OpenOCD starts automatically when a device is hotplugged or at boot,
+requiring zero manual configuration:
+
+- **Auto-detection sequence**: The portal tries OpenOCD configs in order
+  until one succeeds:
+  - USB JTAG: C3 → S3 → C6 → H2
+  - ESP-Prog probe: ESP32 → S3 → C3 → C6 → H2 → S2
+- **Fallback**: If USB JTAG detection fails and an ESP-Prog probe is
+  configured for the slot, the portal automatically falls back to probe-based
+  debugging.
+- **API visibility**: The `/api/devices` response includes `debugging` (bool),
+  `debug_chip` (string or null), and `debug_gdb_port` (int or null) fields
+  for each slot.
+- **Flapping suppression**: Auto-debug is suppressed while a slot is in
+  flapping/recovery state — OpenOCD is not started until the device stabilises.
+- **Hotplug suppression**: While debugging is active on a slot, hotplug events
+  are suppressed to prevent USB re-enumeration from killing the OpenOCD process.
+- **Manual override**: A manual `debug_stop` clears the auto-debug flag for the
+  slot — the portal will not auto-restart debugging on the next hotplug event.
+
 ---
 
 ### FR-025 — GDB Debug: Dual-USB (ESP32-S3 Two-Port)
@@ -2443,6 +2468,16 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | WT-1603 | Serial available during probe debug | Debug: ESP-Prog | Yes |
 | WT-1604 | Probe busy rejected | Debug: ESP-Prog | Yes |
 | WT-1605 | Classic ESP32 via probe | Debug: ESP-Prog | Yes |
+| WT-1700 | Auto-debug on hotplug (C3) | Debug: Auto | Yes |
+| WT-1701 | Auto-debug on hotplug (S3) | Debug: Auto | Yes |
+| WT-1702 | Auto-debug on hotplug (C6) | Debug: Auto | Yes |
+| WT-1703 | Auto-debug on hotplug (H2) | Debug: Auto | Yes |
+| WT-1704 | Auto-debug on boot | Debug: Auto | Yes |
+| WT-1705 | Auto-debug reports in /api/devices | Debug: Auto | Yes |
+| WT-1706 | Auto-debug fallback to ESP-Prog | Debug: Auto | Yes |
+| WT-1707 | Manual debug_stop prevents auto-restart | Debug: Auto | Yes |
+| WT-1708 | Hotplug suppressed during auto-debug | Debug: Auto | Yes |
+| WT-1709 | Auto-debug skipped during flapping | Debug: Auto | No |
 
 \* WT-503/504 require a running AP (wifi_network fixture) but not a physical DUT.
 
@@ -2467,6 +2502,7 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | 6.2 | 2026-02-09 | Claude | GPIO control (FR-018): drive Pi GPIO pins from test scripts to control DUT hardware signals (e.g. hold GPIO 2 low during boot for captive portal trigger); pin allowlist, lazy gpiod init, release-to-input lifecycle; WT-800–806 test cases. Test progress tracking (FR-019): live test session updates pushed to web UI; WT-900–903 test cases |
 | 7.0 | 2026-02-25 | Claude | Three new services: UDP log receiver (FR-020) for ESP32 remote debug logs on port 5555; OTA firmware repository (FR-021) for serving .bin files to ESP32 OTA clients; BLE proxy (FR-022) for scan/connect/write to BLE peripherals via HTTP API using bleak. New deliverable: `ble_controller.py`. WT-1000–1207 test cases |
 | 7.1 | 2026-03-15 | Claude | Hostname renamed Serial1 → esp32-workbench; all references updated to esp32-workbench.local. UDP discovery beacon added to portal.py (port 5888) — containers can discover the workbench automatically. Skills consolidated from 14 → 9: merged flash skills into `esp-idf-handling` (auto-detects local vs workbench), PIO skills into `esp-pio-handling`, FSD + WiFi tests into `fsd-writer` with 9 test spec libraries (WiFi, captive portal, MQTT, BLE, OTA, USB HID, NVS, watchdog, logging). Removed `esp32-` prefix from workbench service skills. `fsd-writer` renamed from `esp32-fsd-writer` to be project-agnostic |
+| 8.1 | 2026-03-28 | Claude | Auto-debug: OpenOCD starts automatically on hotplug/boot with chip auto-detection (C3/S3/C6/H2 via USB JTAG, classic ESP32 via ESP-Prog fallback). Debug status in /api/devices. Hotplug suppression during active debug. Zero-config: just plug in any ESP32. WT-1700–1709 test cases. TASK-160–166 |
 | 8.0 | 2026-03-27 | Claude | Remote GDB debugging — three variants: FR-024 USB JTAG (C3/S3 single-port, OpenOCD via built-in USB-Serial/JTAG), FR-025 Dual-USB (S3 two-port, serial+JTAG+app USB simultaneously), FR-026 ESP-Prog (external FT2232H probe for all ESP32 variants including classic). New `Debugging` slot state, `debug_controller.py` module, 5 API endpoints, slot groups for dual-USB, probe allocation for ESP-Prog. WT-1400–1605 test cases (18 tests). TASK-130–155 |
 | 7.2 | 2026-03-27 | Claude | CW beacon (FR-023): Morse-keyed RF carrier via BCM2835 GPCLK hardware on GPIO 5/6 for direction finder testing; PLLD 500 MHz integer divider for jitter-free 80m band output; PARIS-standard Morse timing 1–60 WPM; cw_beacon.py module; 4 API endpoints; driver methods cw_start/stop/status/frequencies; WT-1300–1304 test cases |
 
@@ -2789,6 +2825,15 @@ Add this to /etc/rfc2217/slots.json:
 - [x] TASK-122: Add `cw_start/stop/status/frequencies()` methods to driver
 - [x] TASK-123: Deploy to Pi and verify API endpoints
 - [x] TASK-124: Implement WT-1300–1304 CW beacon test cases
+
+**Auto-Debug (v8.1):**
+- [x] TASK-160: Auto-start OpenOCD on hotplug add (in _bg_start)
+- [x] TASK-161: Auto-stop OpenOCD on hotplug remove
+- [x] TASK-162: Auto-start OpenOCD on boot (scan_existing_devices)
+- [x] TASK-163: Report debug status in /api/devices response
+- [x] TASK-164: Hotplug suppression via is_debugging() check
+- [x] TASK-165: Auto-fallback from USB JTAG to ESP-Prog probe
+- [ ] TASK-166: Implement WT-1700–1709 auto-debug test cases
 
 **GDB Debug: USB JTAG (v8.0):**
 - [x] TASK-130: Install esp-openocd (aarch64) on Pi

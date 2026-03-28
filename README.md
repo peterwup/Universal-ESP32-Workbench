@@ -138,18 +138,19 @@ Connect GDB to ESP32 devices over the network. OpenOCD runs on the Pi with direc
 | ESP32-H2 | `0x00010c25` | `board/esp32h2-builtin.cfg` |
 | ESP32-S3 | `0x120034e5` | `board/esp32s3-builtin.cfg` |
 
-Serial and JTAG coexist on the same USB connection — no proxy stop needed. The JTAG interface (USB Interface 2) is unclaimed by the kernel, so OpenOCD accesses it directly via libusb.
+OpenOCD starts **automatically** when a device is plugged in — no API call needed. The workbench auto-detects the chip type and exposes the GDB port in `/api/devices`. Serial and JTAG coexist on the same USB connection.
 
 ```bash
-# Start OpenOCD on Pi (example: C3)
-ssh pi@esp32-workbench.local "openocd-esp32 -s /usr/local/share/openocd-esp32/scripts \
-  -f board/esp32c3-builtin.cfg -c 'gdb port 3333' -c 'bindto 0.0.0.0'"
+# Check what's connected — GDB port is ready automatically
+curl http://esp32-workbench.local:8080/api/devices | jq '.slots[] | select(.debugging) | {label, debug_chip, debug_gdb_port}'
 
-# Connect GDB from container
+# Connect GDB from container (example: C3)
 riscv32-esp-elf-gdb build/project.elf \
-  -ex "target extended-remote esp32-workbench.local:3333" \
+  -ex "target extended-remote esp32-workbench.local:3335" \
   -ex "monitor reset halt"
 ```
+
+For classic ESP32 boards without USB JTAG, the workbench automatically falls back to an ESP-Prog probe if one is configured.
 
 ### 9. Test Automation
 
@@ -324,10 +325,11 @@ ut.ble_connect(devices[0]["address"])
 ut.ble_write("6e400002-b5a3-f393-e0a9-e50e24dcca9e", b"\x02Hello")
 ut.ble_disconnect()
 
-# GDB debug — start OpenOCD, connect GDB remotely
-info = ut.debug_start("SLOT1", chip="esp32c3")
-print(f"GDB: target extended-remote esp32-workbench.local:{info['gdb_port']}")
-ut.debug_stop("SLOT1")
+# GDB debug — auto-started, just check status
+status = ut.debug_status()
+# Or manually control:
+info = ut.debug_start()    # auto-detect slot + chip
+ut.debug_stop()
 
 # CW beacon — direction finder test signal
 ut.cw_start(freq=3_571_000, message="VVV DE TEST", wpm=12)

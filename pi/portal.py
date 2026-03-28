@@ -332,6 +332,7 @@ def load_config(path: str) -> dict[str, dict]:
                 "_event_times": [],
                 "_recovering": False,
                 "_recover_retries": 0,
+                "_auto_debug_chip": None,
                 "_lock": threading.Lock(),
             }
         print(f"[portal] loaded {len(result)} slot(s) from {path}", flush=True)
@@ -542,6 +543,7 @@ def _make_dynamic_slot(slot_key: str) -> dict:
         "_event_times": [],
         "_recovering": False,
         "_recover_retries": 0,
+        "_auto_debug_chip": None,
         "_lock": threading.Lock(),
     }
 
@@ -598,6 +600,29 @@ def scan_existing_devices():
             print(f"[portal] boot scan: starting proxy for {slot['label']} ({devnode})", flush=True)
             with slot["_lock"]:
                 start_proxy(slot)
+            # Auto-start debug in background (detect_chip is slow)
+            if slot["running"] and slot.get("gdb_port") and slot.get("label"):
+                def _bg_boot_debug(s=slot):
+                    try:
+                        chip = debug_controller.detect_chip()
+                        if chip:
+                            with s["_lock"]:
+                                if s["present"] and s["running"]:
+                                    r = debug_controller.start(
+                                        s["label"], s,
+                                        s["gdb_port"],
+                                        s["openocd_telnet_port"],
+                                        chip)
+                                    if r.get("ok"):
+                                        s["_auto_debug_chip"] = chip
+                                        log_activity(
+                                            f"Auto-debug: {s['label']} "
+                                            f"({chip}) "
+                                            f"GDB:{s['gdb_port']}", "ok")
+                    except Exception as e:
+                        print(f"[portal] boot auto-debug failed: {e}",
+                              flush=True)
+                threading.Thread(target=_bg_boot_debug, daemon=True).start()
 
 
 def _refresh_slot_health(slot: dict):
@@ -632,6 +657,16 @@ def _slot_info(slot: dict) -> dict:
     info["recovering"] = slot["_recovering"]
     info["recover_retries"] = slot["_recover_retries"]
     info["has_gpio"] = slot.get("gpio_boot") is not None
+    # Debug status
+    label = slot.get("label")
+    if label and debug_controller.is_debugging(label):
+        sessions = debug_controller.status()
+        sess = sessions.get(label, {})
+        info["debugging"] = True
+        info["debug_chip"] = sess.get("chip")
+        info["debug_gdb_port"] = sess.get("gdb_port")
+    else:
+        info["debugging"] = False
     return info
 
 
@@ -1258,7 +1293,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # -- Early exit: if debugging, suppress proxy restarts --
         # USB re-enumeration during JTAG reset is normal; OpenOCD handles it.
-        if slot["state"] == STATE_DEBUGGING:
+        _dbg_label = slot.get("label")
+        if (slot["state"] == STATE_DEBUGGING
+                or (_dbg_label and debug_controller.is_debugging(_dbg_label))):
             print(
                 f"[portal] hotplug: {action} {label} suppressed (debugging)",
                 flush=True,
@@ -1325,6 +1362,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         start_proxy(s)
                         if s["flapping"]:
                             s["last_error"] = "USB flapping detected \u2014 device is connect/disconnect cycling"
+                        # Capture values for auto-debug (run outside lock)
+                        _should_debug = (
+                            s["running"] and s.get("gdb_port")
+                            and s.get("label")
+                            and not s["flapping"]
+                            and not debug_controller.is_debugging(s["label"]))
+                        _gdb = s.get("gdb_port")
+                        _tel = s.get("openocd_telnet_port")
+                        _lbl = s.get("label")
+                    # Auto-start OpenOCD (outside lock — detect_chip is slow)
+                    if _should_debug:
+                        try:
+                            chip = debug_controller.detect_chip()
+                            if chip:
+                                with lk:
+                                    if (s["present"] and s["running"]
+                                            and not s["flapping"]):
+                                        r = debug_controller.start(
+                                            _lbl, s, _gdb, _tel, chip)
+                                        if r.get("ok"):
+                                            s["_auto_debug_chip"] = chip
+                                            log_activity(
+                                                f"Auto-debug: {_lbl} ({chip}) "
+                                                f"GDB:{_gdb}", "ok")
+                        except Exception as e:
+                            print(f"[portal] auto-debug failed: {e}",
+                                  flush=True)
                 threading.Thread(target=_bg_start, daemon=True).start()
             else:
                 print(
@@ -1337,6 +1401,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             slot["present"] = False
             if not slot["flapping"]:
                 slot["state"] = STATE_ABSENT
+            # Stop debug session if active
+            _rm_label = slot.get("label")
+            if _rm_label and debug_controller.is_debugging(_rm_label):
+                debug_controller.stop(_rm_label)
+            slot["_auto_debug_chip"] = None
             if configured and slot["running"]:
                 def _bg_stop(s=slot, lk=lock):
                     with lk:
@@ -2142,8 +2211,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
         result = debug_controller.stop(slot_label)
         slot = _find_slot_by_label(slot_label)
-        if slot and slot["state"] == STATE_DEBUGGING:
-            slot["state"] = STATE_IDLE if slot["present"] else STATE_ABSENT
+        if slot:
+            slot["_auto_debug_chip"] = None  # prevent auto-restart
+            if slot["state"] == STATE_DEBUGGING:
+                slot["state"] = STATE_IDLE if slot["present"] else STATE_ABSENT
             log_activity(f"Debug stopped: {slot_label}", "info")
         self._send_json(result)
 

@@ -27,6 +27,34 @@ Remote GDB debugging of ESP32 devices through the workbench Pi. OpenOCD runs on 
 
 ---
 
+## Auto-Debug (Zero Config)
+
+OpenOCD starts **automatically** when a device is plugged in or at boot. No API call needed.
+
+**How it works:**
+1. Device hotplugged → serial proxy starts → auto-detect tries OpenOCD configs
+2. Chip identified via JTAG TAP ID → OpenOCD starts on the assigned GDB port
+3. If USB JTAG fails (e.g. classic ESP32), falls back to ESP-Prog probe if available
+4. GDB port reported in `/api/devices` response
+
+**Check debug status:**
+```bash
+curl http://esp32-workbench.local:8080/api/devices
+# Look for: "debugging": true, "debug_chip": "esp32s3", "debug_gdb_port": 3335
+```
+
+**Manual override still works:**
+```bash
+# Force stop (won't auto-restart until next hotplug)
+curl -X POST http://esp32-workbench.local:8080/api/debug/stop -d '{}'
+
+# Force start with specific chip
+curl -X POST http://esp32-workbench.local:8080/api/debug/start \
+  -d '{"chip": "esp32c3"}'
+```
+
+---
+
 ## Prerequisites
 
 OpenOCD is pre-installed on the Pi:
@@ -251,6 +279,8 @@ debug_port = 192.168.0.87:3333
 These endpoints are specified in the FSD (FR-024/025/026) but not yet
 implemented in portal.py.
 
+**Note:** `POST /api/debug/start` and `POST /api/debug/stop` accept an empty body `{}`. The workbench auto-detects slot, chip, and probe. All parameters are optional overrides.
+
 ---
 
 ## Troubleshooting
@@ -266,6 +296,8 @@ implemented in portal.py.
 | GDB connection refused | OpenOCD not running or wrong port | Check `telnet 192.168.0.87 4444` first |
 | Flash voltage crash (classic ESP32) | GPIO12/TDI HIGH at boot | Burn VDD_SDIO eFuse to 3.3V |
 | No `303a:1001` in lsusb | Board uses CH340/CP2102 bridge, not native USB | Use ESP-Prog (FR-026) instead |
+| Auto-debug didn't start | Chip not detected or flapping | Check `journalctl -u rfc2217-portal` for `auto-detect` messages |
+| GDB port not in /api/devices | Auto-detect still running | Wait 10-15s after hotplug, then check again |
 
 ---
 
