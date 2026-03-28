@@ -2509,8 +2509,15 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | WT-1707 | Manual debug_stop prevents auto-restart | Debug: Auto | Yes |
 | WT-1708 | Hotplug suppressed during auto-debug | Debug: Auto | Yes |
 | WT-1709 | Auto-debug skipped during flapping | Debug: Auto | No |
+| WT-1800 | End-to-end: flash + serial verify | End-to-End | Yes |
+| WT-1801 | End-to-end: halt and resume via JTAG | End-to-End | Yes |
+| WT-1802 | End-to-end: single-step via JTAG | End-to-End | Yes |
+| WT-1803 | End-to-end: memory read via JTAG | End-to-End | Yes |
+| WT-1804 | End-to-end: hardware breakpoint | End-to-End | Yes |
+| WT-1805 | End-to-end: debug auto-restarts after flash | End-to-End | Yes |
 
 \* WT-503/504 require a running AP (wifi_network fixture) but not a physical DUT.
+\* WT-18xx require debug-test firmware binaries in `debug-test/output/<chip>/`.
 
 ---
 

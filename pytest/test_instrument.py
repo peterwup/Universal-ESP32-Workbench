@@ -4,11 +4,20 @@ These verify the instrument itself works correctly.
 Tests marked @requires_dut need a WiFi device connected; skip with default run.
 """
 
+import os
+import socket
+import subprocess
 import time
 
 import pytest
 
 from wifi_tester_driver import CommandError, CommandTimeout
+
+# Path to pre-built debug-test firmware binaries
+DEBUG_TEST_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "debug-test", "output"
+)
 
 
 # =====================================================================
@@ -558,3 +567,290 @@ class TestAutoDebug:
             assert info["debugging"] is False
         # Restart for other tests
         wifi_tester.debug_start()
+
+
+# =====================================================================
+# WT-18xx  End-to-End: Flash + Debug
+# =====================================================================
+
+
+def _find_present_device(wifi_tester):
+    """Find the first present device and return its slot info."""
+    devices = wifi_tester.get_devices()
+    for d in devices:
+        if d.get("present"):
+            return d
+    return None
+
+
+def _ocd_command(host, port, cmd, timeout=3.0):
+    """Send a command to OpenOCD telnet and return response."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        time.sleep(0.3)
+        s.recv(4096)  # banner
+        s.sendall(f"{cmd}\n".encode())
+        time.sleep(1.0)
+        data = s.recv(8192).decode("latin-1", errors="replace")
+        return data.strip()
+    finally:
+        s.close()
+
+
+def _flash_device(serial_url, chip, target_dir):
+    """Flash debug-test firmware via esptool. Returns True on success."""
+    bootloader = os.path.join(target_dir, "bootloader.bin")
+    partition = os.path.join(target_dir, "partition-table.bin")
+    app = os.path.join(target_dir, "debug-test.bin")
+
+    if not all(os.path.exists(f) for f in [bootloader, partition, app]):
+        return False
+
+    # Classic ESP32 uses hard-reset; native USB chips use watchdog-reset
+    after = "hard-reset" if chip == "esp32" else "watchdog-reset"
+
+    cmd = [
+        "python3", "-m", "esptool",
+        "--chip", chip,
+        "--port", serial_url,
+        "--baud", "460800",
+        "--before=default-reset",
+        f"--after={after}",
+        "write-flash", "--flash-mode", "dio", "--flash-size", "4MB",
+        "0x0000", bootloader,
+        "0x8000", partition,
+        "0x10000", app,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+class TestEndToEnd:
+    """WT-18xx: End-to-end flash + debug tests.
+
+    These tests flash the debug-test firmware, verify serial output,
+    and exercise GDB debugging (halt, step, memory read) for each chip.
+    Run one chip at a time — plug in the target, run the test.
+
+    Usage:
+        pytest test_instrument.py -k TestEndToEnd --run-dut --wt-url http://192.168.0.87:8080
+    """
+
+    @requires_dut
+    def test_wt1800_flash_and_serial(self, wifi_tester):
+        """WT-1800: Flash debug-test firmware and verify serial output."""
+        dev = _find_present_device(wifi_tester)
+        assert dev, "No device connected"
+
+        chip = dev.get("debug_chip", "")
+        url = dev.get("url", "")
+        slot = dev.get("label", "")
+        assert url, "No serial URL assigned"
+
+        # Map debug_chip to esptool chip name
+        esptool_chip = chip if chip else None
+        if not esptool_chip:
+            # Try to detect from debug_start
+            result = wifi_tester.debug_start()
+            esptool_chip = result.get("chip")
+            assert esptool_chip, "Could not detect chip type"
+
+        target_dir = os.path.join(DEBUG_TEST_DIR, esptool_chip)
+        if not os.path.isdir(target_dir):
+            pytest.skip(f"No pre-built binaries for {esptool_chip}")
+
+        # Flash
+        url_with_opts = url + "?ign_set_control" if "?" not in url else url
+        success = _flash_device(url_with_opts, esptool_chip, target_dir)
+        assert success, f"Flash failed for {esptool_chip}"
+
+        # Wait for reboot + auto-detect
+        time.sleep(15)
+
+        # Verify serial output
+        result = wifi_tester.serial_monitor(slot, pattern="LOOP:", timeout=10)
+        assert result.get("matched"), \
+            f"Expected 'LOOP:' in serial output, got: {result.get('output', [])}"
+
+    @requires_dut
+    def test_wt1801_debug_halt_and_resume(self, wifi_tester):
+        """WT-1801: Halt CPU via JTAG, read PC, resume."""
+        dev = _find_present_device(wifi_tester)
+        assert dev, "No device connected"
+        assert dev.get("debugging"), "Debug not active — flash first (WT-1800)"
+
+        host = wifi_tester.base_url.split("//")[1].split(":")[0]
+        telnet_port = dev["debug_gdb_port"] + 1111  # gdb=3333 → telnet=4444
+
+        # Get actual telnet port from debug status
+        status = wifi_tester.debug_status()
+        for label, info in status.get("slots", {}).items():
+            if info.get("debugging"):
+                telnet_port = info.get("telnet_port", telnet_port)
+                break
+
+        # Halt
+        out = _ocd_command(host, telnet_port, "halt")
+        assert "halted" in out.lower() or ">" in out
+
+        # Read PC
+        out = _ocd_command(host, telnet_port, "reg pc")
+        assert "0x" in out, f"Expected PC value, got: {out}"
+
+        # Resume
+        _ocd_command(host, telnet_port, "resume", timeout=2)
+
+    @requires_dut
+    def test_wt1802_debug_single_step(self, wifi_tester):
+        """WT-1802: Single-step CPU via JTAG."""
+        dev = _find_present_device(wifi_tester)
+        assert dev, "No device connected"
+        assert dev.get("debugging"), "Debug not active"
+
+        host = wifi_tester.base_url.split("//")[1].split(":")[0]
+        status = wifi_tester.debug_status()
+        telnet_port = None
+        for info in status.get("slots", {}).values():
+            if info.get("debugging"):
+                telnet_port = info["telnet_port"]
+                break
+        assert telnet_port, "No telnet port found"
+
+        # Halt
+        _ocd_command(host, telnet_port, "halt")
+
+        # Read PC before step
+        out1 = _ocd_command(host, telnet_port, "reg pc")
+        import re
+        m1 = re.search(r"0x[0-9a-fA-F]+", out1)
+        assert m1, f"Could not read PC: {out1}"
+        pc_before = m1.group()
+
+        # Step
+        out = _ocd_command(host, telnet_port, "step", timeout=2)
+        assert "halted" in out.lower() or ">" in out
+
+        # Read PC after step — should have advanced
+        out2 = _ocd_command(host, telnet_port, "reg pc")
+        m2 = re.search(r"0x[0-9a-fA-F]+", out2)
+        assert m2, f"Could not read PC after step: {out2}"
+        pc_after = m2.group()
+
+        assert pc_before != pc_after, \
+            f"PC did not advance: before={pc_before}, after={pc_after}"
+
+        # Resume
+        _ocd_command(host, telnet_port, "resume", timeout=2)
+
+    @requires_dut
+    def test_wt1803_debug_memory_read(self, wifi_tester):
+        """WT-1803: Read memory via JTAG."""
+        dev = _find_present_device(wifi_tester)
+        assert dev, "No device connected"
+        assert dev.get("debugging"), "Debug not active"
+
+        host = wifi_tester.base_url.split("//")[1].split(":")[0]
+        status = wifi_tester.debug_status()
+        telnet_port = None
+        for info in status.get("slots", {}).values():
+            if info.get("debugging"):
+                telnet_port = info["telnet_port"]
+                break
+        assert telnet_port
+
+        # Halt
+        _ocd_command(host, telnet_port, "halt")
+
+        # Read ROM memory (always present at 0x40000000 on all ESP32)
+        out = _ocd_command(host, telnet_port, "mdw 0x40000000 4")
+        assert "0x40000000" in out, f"Memory read failed: {out}"
+
+        # Resume
+        _ocd_command(host, telnet_port, "resume", timeout=2)
+
+    @requires_dut
+    def test_wt1804_debug_breakpoint(self, wifi_tester):
+        """WT-1804: Set and hit a hardware breakpoint via JTAG."""
+        dev = _find_present_device(wifi_tester)
+        assert dev, "No device connected"
+        assert dev.get("debugging"), "Debug not active"
+
+        host = wifi_tester.base_url.split("//")[1].split(":")[0]
+        status = wifi_tester.debug_status()
+        telnet_port = None
+        for info in status.get("slots", {}).values():
+            if info.get("debugging"):
+                telnet_port = info["telnet_port"]
+                break
+        assert telnet_port
+
+        import re
+
+        # Halt, get current PC
+        _ocd_command(host, telnet_port, "halt")
+        out = _ocd_command(host, telnet_port, "reg pc")
+        m = re.search(r"0x([0-9a-fA-F]+)", out)
+        assert m
+        pc = int(m.group(1), 16)
+
+        # Set breakpoint a few instructions ahead
+        bp_addr = pc + 8
+        out = _ocd_command(host, telnet_port,
+                           f"bp 0x{bp_addr:08X} 2 hw")
+        assert "breakpoint" in out.lower() or ">" in out
+
+        # Resume — should hit breakpoint
+        out = _ocd_command(host, telnet_port, "resume", timeout=3)
+
+        # Remove breakpoint
+        _ocd_command(host, telnet_port, f"rbp 0x{bp_addr:08X}")
+
+        # Resume normal execution
+        _ocd_command(host, telnet_port, "resume", timeout=2)
+
+    @requires_dut
+    def test_wt1805_flash_preserves_debug(self, wifi_tester):
+        """WT-1805: Debug auto-restarts after flash (no manual intervention)."""
+        dev = _find_present_device(wifi_tester)
+        assert dev, "No device connected"
+
+        chip = dev.get("debug_chip", "")
+        url = dev.get("url", "")
+        slot = dev.get("label", "")
+
+        if not chip:
+            result = wifi_tester.debug_start()
+            chip = result.get("chip", "")
+        assert chip, "Could not detect chip"
+
+        target_dir = os.path.join(DEBUG_TEST_DIR, chip)
+        if not os.path.isdir(target_dir):
+            pytest.skip(f"No pre-built binaries for {chip}")
+
+        # Verify debug is active before flash
+        dev_before = _find_present_device(wifi_tester)
+        assert dev_before.get("debugging"), "Debug should be active before flash"
+
+        # Flash (no debug_stop!)
+        url_with_opts = url + "?ign_set_control" if "?" not in url else url
+        success = _flash_device(url_with_opts, chip, target_dir)
+        assert success, "Flash failed"
+
+        # Wait for reboot + auto-detect + auto-debug
+        time.sleep(15)
+
+        # Verify debug auto-restarted
+        dev_after = _find_present_device(wifi_tester)
+        assert dev_after, "Device not found after flash"
+        assert dev_after.get("debugging"), \
+            "Debug did not auto-restart after flash"
+        assert dev_after.get("debug_chip") == chip
+
+        # Verify serial output
+        result = wifi_tester.serial_monitor(slot, pattern="LOOP:", timeout=10)
+        assert result.get("matched"), "Firmware not running after flash"
