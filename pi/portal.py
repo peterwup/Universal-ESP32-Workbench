@@ -31,6 +31,12 @@ PORT = 8080
 CONFIG_FILE = os.environ.get("RFC2217_CONFIG", "/etc/rfc2217/slots.json")
 PROXY_EXE = "/usr/local/bin/plain_rfc2217_server.py"
 
+# Auto-assignment port ranges
+TCP_PORT_BASE = int(os.environ.get("TCP_PORT_BASE", "4001"))
+GDB_PORT_BASE = int(os.environ.get("GDB_PORT_BASE", "3333"))
+TELNET_PORT_BASE = int(os.environ.get("TELNET_PORT_BASE", "4444"))
+_auto_label_counter = 0
+
 # Flap detection — suppress proxy restarts during USB connect/disconnect storms
 FLAP_WINDOW_S = 30       # Look at events within this window
 FLAP_THRESHOLD = 6        # 6 events in 30s = 3 connect/disconnect cycles
@@ -300,47 +306,109 @@ def start_beacon():
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Global config (loaded from slots.json, optional)
+_global_config: dict = {}
+
+
 def load_config(path: str) -> dict[str, dict]:
-    """Parse slots.json and return pre-populated slots dict keyed by slot_key."""
+    """Parse slots.json for global config (GPIO, probes). Slots are auto-managed.
+
+    slots.json is optional. If present, it provides:
+      - gpio_boot, gpio_en: Pi GPIO pins for DUT reset/boot control (global)
+      - debug_probes: ESP-Prog probe definitions
+      - slots: optional pre-configured slot overrides (legacy compatibility)
+    """
+    global _global_config
     result: dict[str, dict] = {}
     try:
         with open(path) as f:
             cfg = json.load(f)
+        _global_config = {
+            "gpio_boot": cfg.get("gpio_boot"),
+            "gpio_en": cfg.get("gpio_en"),
+            "debug_probes": cfg.get("debug_probes", []),
+        }
+        # Legacy: pre-configured slots (optional, for backward compat)
         for entry in cfg.get("slots", []):
             key = entry["slot_key"]
-            result[key] = {
-                "label": entry["label"],
-                "slot_key": key,
-                "tcp_port": entry["tcp_port"],
-                "gdb_port": entry.get("gdb_port"),
-                "openocd_telnet_port": entry.get("openocd_telnet_port"),
-                "group": entry.get("group"),
-                "role": entry.get("role"),
-                "gpio_boot": entry.get("gpio_boot"),
-                "gpio_en": entry.get("gpio_en"),
-                "present": False,
-                "running": False,
-                "pid": None,
-                "devnode": None,
-                "seq": 0,
-                "last_action": None,
-                "last_event_ts": None,
-                "url": None,
-                "last_error": None,
-                "flapping": False,
-                "state": STATE_ABSENT,
-                "_event_times": [],
-                "_recovering": False,
-                "_recover_retries": 0,
-                "_auto_debug_chip": None,
-                "_lock": threading.Lock(),
-            }
-        print(f"[portal] loaded {len(result)} slot(s) from {path}", flush=True)
+            result[key] = _make_slot(
+                slot_key=key,
+                label=entry.get("label"),
+                tcp_port=entry.get("tcp_port"),
+                gdb_port=entry.get("gdb_port"),
+                openocd_telnet_port=entry.get("openocd_telnet_port"),
+                group=entry.get("group"),
+                role=entry.get("role"),
+            )
+        if result:
+            print(f"[portal] loaded {len(result)} pre-configured slot(s)", flush=True)
+        if _global_config.get("gpio_boot"):
+            print(f"[portal] GPIO: boot={_global_config['gpio_boot']}, "
+                  f"en={_global_config['gpio_en']}", flush=True)
     except FileNotFoundError:
-        print(f"[portal] config not found: {path} (starting with no slots)", flush=True)
+        print(f"[portal] no config file ({path}) — fully automatic mode", flush=True)
     except Exception as exc:
         print(f"[portal] error loading config: {exc}", flush=True)
     return result
+
+
+def _next_available_port(base: int, used_attr: str) -> int:
+    """Find the next available port starting from base."""
+    used = {s.get(used_attr) for s in slots.values() if s.get(used_attr)}
+    port = base
+    while port in used:
+        port += 1
+    return port
+
+
+def _next_label() -> str:
+    """Generate the next auto-label."""
+    global _auto_label_counter
+    _auto_label_counter += 1
+    return f"AUTO-{_auto_label_counter}"
+
+
+def _make_slot(slot_key: str, label: str = None, tcp_port: int = None,
+               gdb_port: int = None, openocd_telnet_port: int = None,
+               group: str = None, role: str = None) -> dict:
+    """Create a fully populated slot dict with auto-assigned ports if needed."""
+    if not tcp_port:
+        tcp_port = _next_available_port(TCP_PORT_BASE, "tcp_port")
+    if not gdb_port:
+        gdb_port = _next_available_port(GDB_PORT_BASE, "gdb_port")
+    if not openocd_telnet_port:
+        openocd_telnet_port = _next_available_port(TELNET_PORT_BASE,
+                                                    "openocd_telnet_port")
+    if not label:
+        label = _next_label()
+
+    return {
+        "label": label,
+        "slot_key": slot_key,
+        "tcp_port": tcp_port,
+        "gdb_port": gdb_port,
+        "openocd_telnet_port": openocd_telnet_port,
+        "group": group,
+        "role": role,
+        "gpio_boot": _global_config.get("gpio_boot"),
+        "gpio_en": _global_config.get("gpio_en"),
+        "present": False,
+        "running": False,
+        "pid": None,
+        "devnode": None,
+        "seq": 0,
+        "last_action": None,
+        "last_event_ts": None,
+        "url": None,
+        "last_error": None,
+        "flapping": False,
+        "state": STATE_ABSENT,
+        "_event_times": [],
+        "_recovering": False,
+        "_recover_retries": 0,
+        "_auto_debug_chip": None,
+        "_lock": threading.Lock(),
+    }
 
 
 def get_host_ip() -> str:
@@ -522,30 +590,8 @@ def stop_proxy(slot: dict) -> bool:
 
 
 def _make_dynamic_slot(slot_key: str) -> dict:
-    """Create a minimal slot dict for an unknown (unconfigured) slot_key."""
-    return {
-        "label": None,
-        "slot_key": slot_key,
-        "tcp_port": None,
-        "gpio_boot": None,
-        "gpio_en": None,
-        "present": False,
-        "running": False,
-        "pid": None,
-        "devnode": None,
-        "seq": 0,
-        "last_action": None,
-        "last_event_ts": None,
-        "url": None,
-        "last_error": None,
-        "flapping": False,
-        "state": STATE_ABSENT,
-        "_event_times": [],
-        "_recovering": False,
-        "_recover_retries": 0,
-        "_auto_debug_chip": None,
-        "_lock": threading.Lock(),
-    }
+    """Create a fully-configured slot for a newly discovered device."""
+    return _make_slot(slot_key=slot_key)
 
 
 def scan_existing_devices():
@@ -589,15 +635,17 @@ def scan_existing_devices():
 
         if slot_key not in slots:
             slots[slot_key] = _make_dynamic_slot(slot_key)
-            print(f"[portal] boot scan: unknown slot_key={slot_key} (tracked, no proxy)", flush=True)
 
         slot = slots[slot_key]
         slot["present"] = True
         slot["devnode"] = devnode
         slot["state"] = STATE_IDLE
+        if slot["tcp_port"]:
+            slot["url"] = f"rfc2217://{host_ip}:{slot['tcp_port']}"
 
-        if slot["tcp_port"] is not None and not slot["running"]:
-            print(f"[portal] boot scan: starting proxy for {slot['label']} ({devnode})", flush=True)
+        if not slot["running"]:
+            print(f"[portal] boot scan: starting {slot['label']} ({devnode}) "
+                  f"on port {slot['tcp_port']}", flush=True)
             with slot["_lock"]:
                 start_proxy(slot)
             # Auto-start debug in background (detect_chip is slow)
@@ -1349,7 +1397,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             if slot["flapping"]:
                 pass  # Recovery handles everything
-            elif configured:
+            else:
                 # Start proxy in a background thread so we don't block the
                 # HTTP response for the settle + port-listen check.
                 def _bg_start(s=slot, lk=lock, dn=devnode):
@@ -1363,6 +1411,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         # Stop existing proxy first if still running
                         if s["running"] and s["pid"]:
                             stop_proxy(s)
+                        # Compute URL
+                        if s["tcp_port"]:
+                            s["url"] = f"rfc2217://{host_ip}:{s['tcp_port']}"
                         start_proxy(s)
                         if s["flapping"]:
                             s["last_error"] = "USB flapping detected \u2014 device is connect/disconnect cycling"
@@ -1394,12 +1445,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             print(f"[portal] auto-debug failed: {e}",
                                   flush=True)
                 threading.Thread(target=_bg_start, daemon=True).start()
-            else:
-                print(
-                    f"[portal] hotplug: unknown slot_key={slot_key} "
-                    f"(tracked, no proxy)",
-                    flush=True,
-                )
 
         elif action == "remove":
             slot["present"] = False
@@ -1410,7 +1455,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if _rm_label and debug_controller.is_debugging(_rm_label):
                 debug_controller.stop(_rm_label)
             slot["_auto_debug_chip"] = None
-            if configured and slot["running"]:
+            if slot["running"]:
                 def _bg_stop(s=slot, lk=lock):
                     with lk:
                         stop_proxy(s)
@@ -2854,21 +2899,16 @@ def main():
     host_ip = get_host_ip()
     hostname = get_hostname()
 
-    # Pre-compute URLs for configured slots
+    # Pre-compute URLs for pre-configured slots
     for slot in slots.values():
         if slot["tcp_port"]:
             slot["url"] = f"rfc2217://{host_ip}:{slot['tcp_port']}"
 
-    # Scan for devices already plugged in at boot
+    # Scan for devices already plugged in at boot (auto-assigns ports)
     scan_existing_devices()
 
-    # Load debug probe configuration (if any)
-    try:
-        with open(CONFIG_FILE) as f:
-            cfg = json.load(f)
-        debug_controller.load_probes(cfg.get("debug_probes", []))
-    except Exception:
-        pass
+    # Load debug probe configuration from global config
+    debug_controller.load_probes(_global_config.get("debug_probes", []))
 
     # Start UDP log receiver and discovery beacon
     start_udp_log()
