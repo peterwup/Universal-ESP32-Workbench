@@ -2801,10 +2801,10 @@ Add this to /etc/rfc2217/slots.json:
 - [ ] TASK-137: Implement WT-1400–1406 USB JTAG debug test cases
 
 **GDB Debug: Dual-USB (v8.0):**
-- [ ] TASK-140: Implement slot grouping (`group` and `role` fields in slots.json)
-- [ ] TASK-141: Implement `GET /api/debug/group` endpoint
-- [ ] TASK-142: Allow OpenOCD + RFC2217 to coexist on `debug`-role slots
-- [ ] TASK-143: Add `debug_groups()` method to driver
+- [x] TASK-140: Implement slot grouping (`group` and `role` fields in slots.json)
+- [x] TASK-141: Implement `GET /api/debug/group` endpoint
+- [x] TASK-142: Allow OpenOCD + RFC2217 to coexist on `debug`-role slots
+- [x] TASK-143: Add `debug_groups()` method to driver
 - [ ] TASK-144: Implement WT-1500–1503 Dual-USB debug test cases
 
 **GDB Debug: ESP-Prog (v8.0):**

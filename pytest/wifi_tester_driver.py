@@ -471,3 +471,7 @@ class WiFiTesterDriver:
         """List available debug probes (ESP-Prog)."""
         result = self._api_get("/api/debug/probes")
         return result.get("probes", [])
+
+    def debug_groups(self) -> dict:
+        """Get slot groups for dual-USB configurations."""
+        return self._api_get("/api/debug/group").get("groups", {})

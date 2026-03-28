@@ -314,6 +314,8 @@ def load_config(path: str) -> dict[str, dict]:
                 "tcp_port": entry["tcp_port"],
                 "gdb_port": entry.get("gdb_port"),
                 "openocd_telnet_port": entry.get("openocd_telnet_port"),
+                "group": entry.get("group"),
+                "role": entry.get("role"),
                 "gpio_boot": entry.get("gpio_boot"),
                 "gpio_en": entry.get("gpio_en"),
                 "present": False,
@@ -1088,6 +1090,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_debug_status()
         elif path == "/api/debug/probes":
             self._handle_debug_probes()
+        elif path == "/api/debug/group":
+            self._handle_debug_group()
         elif path == "/api/cw/status":
             self._handle_cw_status()
         elif path == "/api/cw/frequencies":
@@ -2089,7 +2093,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         result = debug_controller.start(
             slot_label, slot, gdb_port, telnet_port, chip, probe)
         if result.get("ok"):
-            slot["state"] = STATE_DEBUGGING
+            # Dual-USB (role=debug): serial + JTAG coexist, keep state idle
+            # Single-port or probe: set state to debugging
+            if slot.get("role") != "debug":
+                slot["state"] = STATE_DEBUGGING
             log_activity(
                 f"Debug started: {slot_label} ({chip or 'auto'}) "
                 f"GDB:{gdb_port}", "ok")
@@ -2125,6 +2132,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _handle_debug_probes(self):
         probes = debug_controller.get_probes()
         self._send_json({"ok": True, "probes": probes})
+
+    def _handle_debug_group(self):
+        groups: dict[str, dict] = {}
+        for s in slots.values():
+            grp = s.get("group")
+            if not grp:
+                continue
+            role = s.get("role", "unknown")
+            if grp not in groups:
+                groups[grp] = {}
+            groups[grp][role] = {
+                "label": s.get("label"),
+                "tcp_port": s.get("tcp_port"),
+                "gdb_port": s.get("gdb_port"),
+                "present": s.get("present", False),
+                "running": s.get("running", False),
+                "state": s.get("state"),
+            }
+        self._send_json({"ok": True, "groups": groups})
 
     # -- CW beacon handlers --
 
