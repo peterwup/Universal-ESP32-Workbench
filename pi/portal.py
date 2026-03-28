@@ -1636,10 +1636,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not slot:
             self._send_json({"ok": False, "error": f"slot '{slot_label}' not found"})
             return
-        log_activity(f"serial.reset({slot_label})", "step")
-        result = serial_reset(slot)
+
+        # JTAG reset if debug session is active (no USB re-enumeration)
+        effective_label = slot.get("label") or slot.get("slot_key", "")[-20:]
+        if debug_controller.is_debugging(effective_label):
+            log_activity(f"serial.reset({slot_label}) via JTAG", "step")
+            result = debug_controller.jtag_reset(effective_label)
+            if result["ok"]:
+                log_activity(f"serial.reset({slot_label}) — JTAG reset done", "ok")
+            else:
+                log_activity(f"serial.reset({slot_label}) — JTAG failed, falling back to DTR/RTS", "info")
+                result = serial_reset(slot)
+        else:
+            log_activity(f"serial.reset({slot_label})", "step")
+            result = serial_reset(slot)
+
         if result["ok"]:
-            log_activity(f"serial.reset({slot_label}) — done, {len(result.get('output', []))} lines", "ok")
+            log_activity(f"serial.reset({slot_label}) — done", "ok")
         else:
             log_activity(f"serial.reset({slot_label}) — {result.get('error', 'failed')}", "error")
         self._send_json(result)

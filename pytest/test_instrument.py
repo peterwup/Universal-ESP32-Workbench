@@ -478,6 +478,19 @@ class TestUSBJTAGDebug:
             wifi_tester.debug_start(slot=slot)
         wifi_tester.debug_stop()
 
+    @requires_dut
+    def test_wt1406_jtag_reset(self, wifi_tester):
+        """WT-1406: serial/reset uses JTAG when debug session is active."""
+        wifi_tester.debug_stop()
+        time.sleep(1)
+        result = wifi_tester.debug_start()
+        slot = result["slot"]
+        # Reset via serial API — should auto-select JTAG
+        reset = wifi_tester.serial_reset(slot)
+        assert reset.get("method") == "jtag"
+        assert "reset run" in reset.get("command", "")
+        wifi_tester.debug_stop()
+
 
 # =====================================================================
 # WT-17xx  GDB Debug: Auto-Debug

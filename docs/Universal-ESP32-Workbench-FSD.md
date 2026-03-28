@@ -519,6 +519,27 @@ not present, or serial open fails.
 
 **Used by:** flapping recovery (FR-007), integration tests
 
+#### 8.2 JTAG Reset (when debugging is active)
+
+When an OpenOCD debug session is active for the slot, `/api/serial/reset`
+automatically uses JTAG reset instead of the DTR/RTS serial sequence.
+
+**Advantages over DTR/RTS reset:**
+- No USB re-enumeration — the USB-Serial/JTAG controller stays connected
+- No flapping risk — the device node doesn't disappear and reappear
+- No boot delay needed — the chip resets internally
+- Works even when the serial port is unresponsive
+
+**JTAG reset procedure:**
+1. Send `reset run` command to OpenOCD via its telnet interface
+2. The chip resets and boots normally
+3. Serial proxy remains running — no restart needed
+4. OpenOCD session remains active
+
+**Fallback:** If no debug session is active, the existing DTR/RTS serial
+reset (§8.1) is used. The caller does not need to know which method was
+selected — the API auto-selects.
+
 ### FR-009 — Serial Monitor
 
 Read serial output from a device, optionally waiting for a pattern match.
@@ -618,6 +639,14 @@ POST /api/serial/release {"slot": "SLOT1"}
 
 This sets BOOT to high-Z (input with pull-up), pulses EN for a clean
 reboot, and transitions the slot back to `idle`.
+
+**JTAG-based recovery (when debugging is active):**
+When an OpenOCD session is active, flapping recovery can use JTAG halt
+(`monitor halt`) to stop the CPU immediately, preventing further USB
+cycling. This is more reliable than the USB unbind/rebind approach
+because it stops the root cause (the boot loop) rather than managing
+its symptoms. JTAG halt is attempted first when available; the existing
+GPIO/unbind recovery remains as fallback.
 
 #### 7.4 Recovery — No-GPIO Path
 
@@ -2503,6 +2532,7 @@ Add `--run-dut` to include tests that require a WiFi device under test.
 | 7.0 | 2026-02-25 | Claude | Three new services: UDP log receiver (FR-020) for ESP32 remote debug logs on port 5555; OTA firmware repository (FR-021) for serving .bin files to ESP32 OTA clients; BLE proxy (FR-022) for scan/connect/write to BLE peripherals via HTTP API using bleak. New deliverable: `ble_controller.py`. WT-1000–1207 test cases |
 | 7.1 | 2026-03-15 | Claude | Hostname renamed Serial1 → esp32-workbench; all references updated to esp32-workbench.local. UDP discovery beacon added to portal.py (port 5888) — containers can discover the workbench automatically. Skills consolidated from 14 → 9: merged flash skills into `esp-idf-handling` (auto-detects local vs workbench), PIO skills into `esp-pio-handling`, FSD + WiFi tests into `fsd-writer` with 9 test spec libraries (WiFi, captive portal, MQTT, BLE, OTA, USB HID, NVS, watchdog, logging). Removed `esp32-` prefix from workbench service skills. `fsd-writer` renamed from `esp32-fsd-writer` to be project-agnostic |
 | 8.1 | 2026-03-28 | Claude | Auto-debug: OpenOCD starts automatically on hotplug/boot with chip auto-detection (C3/S3/C6/H2 via USB JTAG, classic ESP32 via ESP-Prog fallback). Debug status in /api/devices. Hotplug suppression during active debug. Zero-config: just plug in any ESP32. WT-1700–1709 test cases. TASK-160–166 |
+| 8.2 | 2026-03-28 | Claude | JTAG-based reset and recovery: `/api/serial/reset` auto-selects JTAG reset when debug session is active (no USB re-enumeration, no flapping risk). Flapping recovery via JTAG halt when available. Skills updated with JTAG reset documentation |
 | 8.0 | 2026-03-27 | Claude | Remote GDB debugging — three variants: FR-024 USB JTAG (C3/S3 single-port, OpenOCD via built-in USB-Serial/JTAG), FR-025 Dual-USB (S3 two-port, serial+JTAG+app USB simultaneously), FR-026 ESP-Prog (external FT2232H probe for all ESP32 variants including classic). New `Debugging` slot state, `debug_controller.py` module, 5 API endpoints, slot groups for dual-USB, probe allocation for ESP-Prog. WT-1400–1605 test cases (18 tests). TASK-130–155 |
 | 7.2 | 2026-03-27 | Claude | CW beacon (FR-023): Morse-keyed RF carrier via BCM2835 GPCLK hardware on GPIO 5/6 for direction finder testing; PLLD 500 MHz integer divider for jitter-free 80m band output; PARIS-standard Morse timing 1–60 WPM; cw_beacon.py module; 4 API endpoints; driver methods cw_start/stop/status/frequencies; WT-1300–1304 test cases |
 
@@ -2834,6 +2864,11 @@ Add this to /etc/rfc2217/slots.json:
 - [x] TASK-164: Hotplug suppression via is_debugging() check
 - [x] TASK-165: Auto-fallback from USB JTAG to ESP-Prog probe
 - [ ] TASK-166: Implement WT-1700–1709 auto-debug test cases
+
+**JTAG Reset Integration (v8.2):**
+- [x] TASK-170: Implement JTAG reset path in `/api/serial/reset` (send `reset run` via OpenOCD telnet when debugging)
+- [ ] TASK-171: Implement JTAG halt in flapping recovery
+- [x] TASK-172: Test JTAG reset with ESP32-C6 via USB JTAG
 
 **GDB Debug: USB JTAG (v8.0):**
 - [x] TASK-130: Install esp-openocd (aarch64) on Pi

@@ -55,6 +55,45 @@ curl -X POST http://esp32-workbench.local:8080/api/debug/start \
 
 ---
 
+## JTAG Reset (Preferred When Available)
+
+When a debug session is active, the workbench automatically uses **JTAG reset** instead of DTR/RTS serial reset. This is transparent — the same `/api/serial/reset` API is used.
+
+**Why JTAG reset is better:**
+- No USB re-enumeration (device node stays stable)
+- No flapping risk
+- No 2-second boot delay
+- Works even when serial port is unresponsive
+- Can halt the CPU to stop boot loops
+
+**Via OpenOCD telnet (manual):**
+```bash
+# Soft reset (chip reboots normally)
+echo "reset run" | nc 192.168.0.87 4446
+
+# Halt CPU (stops execution immediately)
+echo "halt" | nc 192.168.0.87 4446
+
+# Reset and halt (for debugging from first instruction)
+echo "reset halt" | nc 192.168.0.87 4446
+```
+
+**Via workbench API (automatic):**
+```bash
+# Uses JTAG reset when debug session is active, DTR/RTS otherwise
+curl -X POST http://esp32-workbench.local:8080/api/serial/reset \
+  -H "Content-Type: application/json" -d '{"slot": "SLOT1"}'
+```
+
+**Availability:**
+| Scenario | JTAG reset? |
+|----------|:-:|
+| C3/S3/C6/H2 with native USB | Yes (auto-started) |
+| Classic ESP32 + ESP-Prog | Yes (when probe wired) |
+| Classic ESP32 without ESP-Prog | No — DTR/RTS fallback |
+
+---
+
 ## Prerequisites
 
 OpenOCD is pre-installed on the Pi:

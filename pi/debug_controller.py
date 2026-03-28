@@ -338,6 +338,67 @@ def is_debugging(slot_label: str) -> bool:
         return slot_label in _sessions
 
 
+def _openocd_command(telnet_port: int, command: str,
+                     timeout: float = 3.0) -> str:
+    """Send a command to OpenOCD via its telnet interface."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(("127.0.0.1", telnet_port))
+        time.sleep(0.3)
+        s.recv(4096)  # consume banner/negotiation
+        s.sendall(f"{command}\n".encode())
+        time.sleep(1.0)
+        data = s.recv(4096).decode("latin-1", errors="replace")
+        return data.strip()
+    finally:
+        s.close()
+
+
+def jtag_reset(slot_label: str, halt: bool = False) -> dict:
+    """Reset the device via JTAG (no USB re-enumeration).
+
+    Args:
+        slot_label: Slot label or truncated key.
+        halt: If True, halt after reset. If False, run normally.
+
+    Returns:
+        Result dict with ok, output.
+    """
+    with _lock:
+        session = _sessions.get(slot_label)
+        if not session:
+            return {"ok": False, "error": "no debug session active"}
+        telnet_port = session["telnet_port"]
+
+    cmd = "reset halt" if halt else "reset run"
+    try:
+        output = _openocd_command(telnet_port, cmd)
+        return {"ok": True, "method": "jtag", "command": cmd,
+                "output": output}
+    except Exception as e:
+        return {"ok": False, "error": f"JTAG reset failed: {e}"}
+
+
+def jtag_halt(slot_label: str) -> dict:
+    """Halt the CPU via JTAG (stops execution immediately).
+
+    Returns:
+        Result dict with ok, output.
+    """
+    with _lock:
+        session = _sessions.get(slot_label)
+        if not session:
+            return {"ok": False, "error": "no debug session active"}
+        telnet_port = session["telnet_port"]
+
+    try:
+        output = _openocd_command(telnet_port, "halt")
+        return {"ok": True, "method": "jtag", "output": output}
+    except Exception as e:
+        return {"ok": False, "error": f"JTAG halt failed: {e}"}
+
+
 def get_probes() -> list[dict]:
     """Return list of configured debug probes."""
     with _lock:
