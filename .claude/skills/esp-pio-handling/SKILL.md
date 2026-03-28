@@ -67,9 +67,7 @@ curl -s http://workbench.local:8080/api/devices | jq '.slots[] | {label, url, st
 ### Configure platformio.ini
 
 ```ini
-upload_port = rfc2217://workbench.local:4001?ign_set_control
-monitor_port = rfc2217://workbench.local:4001?ign_set_control
-```
+upload_port = rfc2217://workbench.local:4001monitor_port = rfc2217://workbench.local:4001```
 
 ### Or via command line
 
