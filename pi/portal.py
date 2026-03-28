@@ -2074,7 +2074,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         chip = body.get("chip")
         probe = body.get("probe")
 
-        # Auto-find slot: pick the first present device with USB JTAG
+        # Auto-find slot: pick the first present device
         if not slot_label:
             for s in slots.values():
                 if s.get("present") and s.get("label"):
@@ -2091,20 +2091,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
         gdb_port = slot.get("gdb_port")
         telnet_port = slot.get("openocd_telnet_port")
         if not gdb_port:
-            # Auto-assign based on slot index
             idx = list(slots.values()).index(slot) if slot in slots.values() else 0
             gdb_port = 3333 + idx
             telnet_port = 4444 + idx
+
+        # Try USB JTAG first, then fall back to probe if available
         result = debug_controller.start(
             slot_label, slot, gdb_port, telnet_port, chip, probe)
+
+        # If USB JTAG auto-detect failed and no probe was specified,
+        # try again with the first available probe
+        if not result.get("ok") and not probe:
+            available_probes = debug_controller.get_probes()
+            for p in available_probes:
+                if not p["in_use"]:
+                    log_activity(
+                        f"USB JTAG failed, trying probe {p['label']}",
+                        "step")
+                    result = debug_controller.start(
+                        slot_label, slot, gdb_port, telnet_port,
+                        chip, p["label"])
+                    if result.get("ok"):
+                        break
+
         if result.get("ok"):
-            # Dual-USB (role=debug): serial + JTAG coexist, keep state idle
-            # Single-port or probe: set state to debugging
-            if slot.get("role") != "debug":
+            detected_chip = result.get("chip", chip)
+            used_probe = result.get("probe")
+            # Dual-USB (role=debug) or probe: serial stays running
+            if slot.get("role") != "debug" and not used_probe:
                 slot["state"] = STATE_DEBUGGING
             log_activity(
-                f"Debug started: {slot_label} ({chip or 'auto'}) "
-                f"GDB:{gdb_port}", "ok")
+                f"Debug started: {slot_label} ({detected_chip}) "
+                f"GDB:{gdb_port}"
+                + (f" via {used_probe}" if used_probe else ""),
+                "ok")
         self._send_json(result)
 
     def _handle_debug_stop(self):
