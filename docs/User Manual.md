@@ -43,7 +43,7 @@ How to use the Serial Portal — connecting to serial devices over the network v
 Your machine                         Pi Zero W
 ───────────                          ─────────
 pytest                               portal.py :8080
-  └─ WiFiTesterDriver ──HTTP──►        └─ wifi_controller.py
+  └─ ESP32WorkbenchDriver ──HTTP──►        └─ wifi_controller.py
                                           ├─ hostapd    (AP mode)
                                           ├─ dnsmasq    (DHCP)
                                           ├─ wpa_supplicant (STA mode)
@@ -232,9 +232,9 @@ All endpoints return `{"ok": true, ...}` or `{"ok": false, "error": "message"}`.
 ### Python Driver Usage
 
 ```python
-from wifi_tester_driver import WiFiTesterDriver
+from esp32_workbench_driver import ESP32WorkbenchDriver
 
-wt = WiFiTesterDriver("http://192.168.1.50:8080")
+wt = ESP32WorkbenchDriver("http://192.168.1.50:8080")
 wt.open()
 
 # Ping

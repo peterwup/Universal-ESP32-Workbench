@@ -9,7 +9,7 @@ How to manipulate the ESP32-C3 DUT during automated tests using the Serial Porta
 
 **Golden rule:** The Serial Portal and MQTT broker are always-on infrastructure. Tests NEVER start, stop, or restart them.
 
-**Driver rule:** Always use `WiFiTesterDriver` from Python — never raw curl. This gives typed responses, proper error handling, and access to the slot `state` field.
+**Driver rule:** Always use `ESP32WorkbenchDriver` from Python — never raw curl. This gives typed responses, proper error handling, and access to the slot `state` field.
 
 ---
 
@@ -75,7 +75,7 @@ wt.test_end()
 | DUT WiFi (portal) | 192.168.4.1 | DUT in captive portal AP mode |
 | MQTT broker | 192.168.4.1:1883 | Mosquitto on Pi (via WiFi Tester AP) |
 
-Slots are auto-discovered from USB hotplug events (configured in `workbench.json`). **Always discover the DUT slot at runtime** using `wt.get_devices()` -- never hardcode a slot label or port number. Slot labels and RFC2217 ports are assigned dynamically.
+Slots are mapped to physical USB hub ports via prefix matching (configured in `workbench.json`). There are 3 fixed slots: SLOT1 (:4001), SLOT2 (:4002), SLOT3 (:4003). **Always discover the DUT slot at runtime** using `wt.get_devices()` -- verify the device is present before using it.
 
 ### MQTT Broker (mosquitto on Pi)
 
@@ -124,22 +124,22 @@ All functional tests (Phase 1) run entirely on the artificial network — the Wi
 
 ## 0. WiFi Tester Driver Setup
 
-All test operations use `WiFiTesterDriver`. Set `PYTHONPATH` to import it:
+All test operations use `ESP32WorkbenchDriver`. Set `PYTHONPATH` to import it:
 
 ```python
 import sys
 sys.path.insert(0, "/tmp/Universal-ESP32-Tester/pytest")
-from wifi_tester_driver import WiFiTesterDriver
+from esp32_workbench_driver import ESP32WorkbenchDriver
 
-wt = WiFiTesterDriver("http://192.168.0.87:8080")
+wt = ESP32WorkbenchDriver("http://192.168.0.87:8080")
 ```
 
 Or from bash one-liners:
 
 ```bash
 PYTHONPATH=/tmp/Universal-ESP32-Tester/pytest python3 -c "
-from wifi_tester_driver import WiFiTesterDriver
-wt = WiFiTesterDriver('http://192.168.0.87:8080')
+from esp32_workbench_driver import ESP32WorkbenchDriver
+wt = ESP32WorkbenchDriver('http://192.168.0.87:8080')
 # ... operations ...
 "
 ```
@@ -150,7 +150,7 @@ wt = WiFiTesterDriver('http://192.168.0.87:8080')
 # Find which slot has a device present
 devices = wt.get_devices()
 dut = next(s for s in devices if s["present"])
-SLOT = dut["label"]       # e.g. "slot-1", "slot-2", "slot-3" (auto-discovered)
+SLOT = dut["label"]       # e.g. "SLOT1", "SLOT2", "SLOT3" (fixed labels)
 PORT = dut["url"]         # e.g. "rfc2217://192.168.0.87:4001" (auto-assigned port)
 ```
 

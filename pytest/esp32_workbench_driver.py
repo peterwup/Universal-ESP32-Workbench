@@ -1,12 +1,13 @@
-"""HTTP driver for the WiFi Tester instrument (Pi-based).
+"""HTTP driver for the ESP32 Embedded Workbench.
 
-Communicates with the Pi's portal HTTP API.  The Pi's wlan0 radio acts as
-the test instrument; eth0 provides LAN connectivity.
+Communicates with the workbench HTTP API.  Provides serial, debug, WiFi,
+BLE, GPIO, firmware, and test progress control over the network.
 """
 
 import base64
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.request
@@ -42,11 +43,11 @@ class Response:
 # ── Exceptions ───────────────────────────────────────────────────────
 
 
-class WiFiTesterError(Exception):
-    """Base exception for WiFi Tester errors."""
+class WorkbenchError(Exception):
+    """Base exception for Embedded Workbench errors."""
 
 
-class CommandError(WiFiTesterError):
+class CommandError(WorkbenchError):
     """Portal returned ok=false."""
 
     def __init__(self, command: str, payload: dict):
@@ -56,15 +57,15 @@ class CommandError(WiFiTesterError):
         super().__init__(f"{command}: {msg}")
 
 
-class CommandTimeout(WiFiTesterError):
+class CommandTimeout(WorkbenchError):
     """No response received within timeout."""
 
 
 # ── Driver ───────────────────────────────────────────────────────────
 
 
-class WiFiTesterDriver:
-    """HTTP driver for the WiFi Tester (Pi backend)."""
+class ESP32WorkbenchDriver:
+    """HTTP driver for the ESP32 Embedded Workbench."""
 
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -483,3 +484,134 @@ class WiFiTesterDriver:
     def debug_groups(self) -> dict:
         """Get slot groups for dual-USB configurations."""
         return self._api_get("/api/debug/group").get("groups", {})
+
+    # ── UDP log ──────────────────────────────────────────────────────
+
+    def udplog(self, source: str = None, since: str = None,
+               limit: int = None) -> list[dict]:
+        """GET /api/udplog — buffered UDP debug log lines from ESP32 devices."""
+        params = []
+        if source:
+            params.append(f"source={source}")
+        if since:
+            params.append(f"since={since}")
+        if limit:
+            params.append(f"limit={limit}")
+        qs = "?" + "&".join(params) if params else ""
+        url = f"{self.base_url}/api/udplog{qs}"
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            raise CommandTimeout(f"GET /api/udplog: {e}")
+        return data.get("lines", [])
+
+    def udplog_clear(self) -> None:
+        """DELETE /api/udplog — clear the log buffer."""
+        url = f"{self.base_url}/api/udplog"
+        req = urllib.request.Request(url, method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                json.loads(resp.read())
+        except Exception as e:
+            raise CommandTimeout(f"DELETE /api/udplog: {e}")
+
+    # ── Firmware ─────────────────────────────────────────────────────
+
+    def firmware_list(self) -> list[dict]:
+        """GET /api/firmware/list — list available firmware files."""
+        return self._api_get("/api/firmware/list").get("files", [])
+
+    def firmware_upload(self, project: str, filepath: str) -> dict:
+        """POST /api/firmware/upload — upload a binary file."""
+        import mimetypes
+        boundary = "----WorkbenchUpload"
+        filename = os.path.basename(filepath)
+        with open(filepath, "rb") as f:
+            file_data = f.read()
+
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="project"\r\n\r\n'
+            f"{project}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
+
+        url = f"{self.base_url}/api/firmware/upload"
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            raise CommandTimeout(f"POST /api/firmware/upload: {e}")
+        return data
+
+    def firmware_delete(self, project: str, filename: str) -> dict:
+        """DELETE /api/firmware/delete — delete a firmware file."""
+        url = f"{self.base_url}/api/firmware/delete"
+        data_bytes = json.dumps({"project": project, "filename": filename}).encode()
+        req = urllib.request.Request(
+            url, data=data_bytes,
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            raise CommandTimeout(f"DELETE /api/firmware/delete: {e}")
+
+    # ── BLE ──────────────────────────────────────────────────────────
+
+    def ble_scan(self, timeout: int = 5,
+                 name_filter: str = None) -> list[dict]:
+        """Scan for BLE peripherals."""
+        body: dict = {"timeout": timeout}
+        if name_filter:
+            body["name_filter"] = name_filter
+        result = self._api_post("/api/ble/scan", body, timeout=timeout + 10)
+        return result.get("devices", [])
+
+    def ble_connect(self, address: str) -> dict:
+        """Connect to a BLE peripheral by address."""
+        return self._api_post("/api/ble/connect", {"address": address}, timeout=15)
+
+    def ble_disconnect(self) -> dict:
+        """Disconnect current BLE connection."""
+        return self._api_post("/api/ble/disconnect")
+
+    def ble_write(self, characteristic: str, data: str,
+                  response: bool = False) -> dict:
+        """Write hex bytes to a GATT characteristic."""
+        return self._api_post("/api/ble/write", {
+            "characteristic": characteristic,
+            "data": data,
+            "response": response,
+        })
+
+    def ble_status(self) -> dict:
+        """Get BLE connection state."""
+        return self._api_get("/api/ble/status")
+
+    # ── Serial recovery ──────────────────────────────────────────────
+
+    def serial_recover(self, slot: str) -> dict:
+        """POST /api/serial/recover — trigger manual flap recovery."""
+        return self._api_post("/api/serial/recover", {"slot": slot}, timeout=30)
+
+    def serial_release(self, slot: str) -> dict:
+        """POST /api/serial/release — release GPIO after flashing, reboot."""
+        return self._api_post("/api/serial/release", {"slot": slot}, timeout=10)
+
+    # ── System info ──────────────────────────────────────────────────
+
+    def info(self) -> dict:
+        """GET /api/info — host IP, hostname, slot counts."""
+        return self._api_get("/api/info")

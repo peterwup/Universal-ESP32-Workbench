@@ -39,7 +39,7 @@ _auto_label_counter = 0
 
 # Flap detection — suppress proxy restarts during USB connect/disconnect storms
 FLAP_WINDOW_S = 30       # Look at events within this window
-FLAP_THRESHOLD = 6        # 6 events in 30s = 3 connect/disconnect cycles
+FLAP_THRESHOLD = 10       # 10 events in 30s — allows dual-USB devices (2 events per plug)
 FLAP_COOLDOWN_S = 10      # After flapping, wait before recovery attempt
 FLAP_MAX_RETRIES = 2      # Max no-GPIO recovery attempts before manual intervention
 
@@ -317,9 +317,12 @@ def load_config(path: str) -> dict[str, dict]:
       - gpio_boot: Pi BCM GPIO pin wired to DUT BOOT (None if not wired)
       - gpio_en: Pi BCM GPIO pin wired to DUT EN/RST (None if not wired)
       - debug_probes: ESP-Prog probe definitions (empty if none)
+      - slots: Fixed slot definitions with usb_prefix for physical port mapping
     """
     global _global_config
-    _global_config = {"gpio_boot": None, "gpio_en": None, "debug_probes": []}
+    _global_config = {"gpio_boot": None, "gpio_en": None, "debug_probes": [],
+                      "slot_prefixes": []}
+    result: dict[str, dict] = {}
     try:
         with open(path) as f:
             cfg = json.load(f)
@@ -329,16 +332,53 @@ def load_config(path: str) -> dict[str, dict]:
             _global_config["gpio_en"] = cfg["gpio_en"]
         if cfg.get("debug_probes"):
             _global_config["debug_probes"] = cfg["debug_probes"]
+        # Fixed slot definitions — each has label, optional usb_prefix
+        for sdef in cfg.get("slots", []):
+            label = sdef["label"]
+            prefix = sdef.get("usb_prefix")  # None = catch-all
+            placeholder_key = f"_fixed_{label}"
+            slot = _make_slot(
+                slot_key=placeholder_key,
+                label=label,
+                tcp_port=sdef.get("tcp_port"),
+                gdb_port=sdef.get("gdb_port"),
+                openocd_telnet_port=sdef.get("openocd_telnet_port"),
+            )
+            slot["_usb_prefix"] = prefix
+            result[placeholder_key] = slot
+            _global_config["slot_prefixes"].append(
+                {"label": label, "prefix": prefix,
+                 "placeholder_key": placeholder_key})
         gb = _global_config["gpio_boot"]
         ge = _global_config["gpio_en"]
         probes = len(_global_config["debug_probes"])
+        n_slots = len(cfg.get("slots", []))
         print(f"[portal] config: gpio_boot={gb}, gpio_en={ge}, "
-              f"probes={probes}", flush=True)
+              f"probes={probes}, fixed_slots={n_slots}", flush=True)
     except FileNotFoundError:
         print(f"[portal] no config file — GPIO=none, probes=none", flush=True)
     except Exception as exc:
         print(f"[portal] config error: {exc}", flush=True)
-    return {}
+    return result
+
+
+def _find_fixed_slot_for_key(slot_key: str) -> dict | None:
+    """Match a USB slot_key against configured prefix patterns.
+
+    Returns the fixed slot dict whose prefix matches, or None.
+    Longer prefixes checked first. The fixed slot always stays in the
+    dict under its placeholder key — multiple slot_keys can map to it.
+    """
+    candidates = sorted(_global_config.get("slot_prefixes", []),
+                        key=lambda sp: len(sp.get("prefix", "")),
+                        reverse=True)
+    for sp in candidates:
+        prefix = sp.get("prefix")
+        if prefix and prefix in slot_key:
+            pk = sp["placeholder_key"]
+            if pk in slots:
+                return slots[pk]
+    return None
 
 
 def _next_available_port(base: int, used_attr: str) -> int:
@@ -385,6 +425,7 @@ def _make_slot(slot_key: str, label: str = None, tcp_port: int = None,
         "running": False,
         "pid": None,
         "devnode": None,
+        "_devnodes": {},  # slot_key → devnode for all active devices on this slot
         "seq": 0,
         "last_action": None,
         "last_event_ts": None,
@@ -592,6 +633,9 @@ def scan_existing_devices():
     import glob as _glob
     import subprocess as _sp
 
+    print(f"[portal] boot scan: {len(slots)} fixed slot(s) from config",
+          flush=True)
+
     devnodes = sorted(_glob.glob("/dev/ttyACM*") + _glob.glob("/dev/ttyUSB*"))
     if not devnodes:
         print("[portal] boot scan: no USB serial devices found", flush=True)
@@ -622,12 +666,19 @@ def scan_existing_devices():
             print(f"[portal] boot scan: no slot_key for {devnode}, skipping", flush=True)
             continue
 
-        if slot_key not in slots:
+        fixed = _find_fixed_slot_for_key(slot_key)
+        if fixed:
+            slot = fixed
+        elif slot_key not in slots:
             slots[slot_key] = _make_dynamic_slot(slot_key)
+            slot = slots[slot_key]
+        else:
+            slot = slots[slot_key]
 
-        slot = slots[slot_key]
+        slot["_devnodes"][slot_key] = devnode
         slot["present"] = True
-        slot["devnode"] = devnode
+        if not slot["devnode"]:
+            slot["devnode"] = devnode  # first devnode becomes primary
         slot["state"] = STATE_IDLE
         if slot["tcp_port"]:
             slot["url"] = f"rfc2217://{host_ip}:{slot['tcp_port']}"
@@ -640,11 +691,16 @@ def scan_existing_devices():
             # Auto-start debug in background (detect_chip is slow)
             if slot["running"] and slot.get("gdb_port") and slot.get("label"):
                 def _bg_boot_debug(s=slot):
+                    time.sleep(3)  # let proxy stabilize
                     try:
                         chip = debug_controller.detect_chip()
                         if chip:
                             with s["_lock"]:
-                                if s["present"] and s["running"]:
+                                if s["present"]:
+                                    # Restart proxy if detection killed it
+                                    if not s["running"] or not _is_process_alive(s.get("pid")):
+                                        start_proxy(s)
+                                        time.sleep(1)
                                     r = debug_controller.start(
                                         s["label"], s,
                                         s["gdb_port"],
@@ -656,9 +712,23 @@ def scan_existing_devices():
                                             f"Auto-debug: {s['label']} "
                                             f"({chip}) "
                                             f"GDB:{s['gdb_port']}", "ok")
+                        else:
+                            # Ensure proxy still alive after failed detection
+                            with s["_lock"]:
+                                if (s["present"]
+                                        and (not s["running"]
+                                             or not _is_process_alive(
+                                                 s.get("pid")))):
+                                    start_proxy(s)
                     except Exception as e:
                         print(f"[portal] boot auto-debug failed: {e}",
                               flush=True)
+                        with s["_lock"]:
+                            if (s["present"]
+                                    and (not s["running"]
+                                         or not _is_process_alive(
+                                             s.get("pid")))):
+                                start_proxy(s)
                 threading.Thread(target=_bg_boot_debug, daemon=True).start()
 
 
@@ -671,6 +741,53 @@ def _refresh_slot_health(slot: dict):
             slot["url"] = None
             slot["last_error"] = "Process died"
             slot["state"] = STATE_IDLE if slot["present"] else STATE_ABSENT
+
+
+def _scan_usb_devices(slot: dict) -> list[dict]:
+    """Scan sysfs for USB devices matching this slot's USB prefix.
+
+    Returns list of {product, vid_pid} for non-serial USB devices (e.g. HID).
+    Slot prefix "0:1.1" maps to sysfs path "1-1.1*".
+    """
+    prefix = slot.get("_usb_prefix")
+    if not prefix:
+        return []
+    # Convert slot prefix "0:1.1" → sysfs glob "1-1.1*"
+    # prefix format: "0:1.X" or "0:1.X.Y"
+    parts = prefix.split(":")  # ["0", "1.1"]
+    if len(parts) != 2:
+        return []
+    sysfs_pattern = f"1-{parts[1]}"
+    sysfs_base = "/sys/bus/usb/devices"
+    devices = []
+    import glob as _glob
+    for path in sorted(_glob.glob(f"{sysfs_base}/{sysfs_pattern}*")):
+        name = os.path.basename(path)
+        # Skip interface entries (contain ':')
+        if ":" in name:
+            continue
+        prod_file = os.path.join(path, "product")
+        vid_file = os.path.join(path, "idVendor")
+        pid_file = os.path.join(path, "idProduct")
+        if not os.path.isfile(prod_file):
+            continue
+        try:
+            product = open(prod_file).read().strip()
+            vid = open(vid_file).read().strip() if os.path.isfile(vid_file) else "?"
+            pid = open(pid_file).read().strip() if os.path.isfile(pid_file) else "?"
+            # Skip hubs
+            if "hub" in product.lower():
+                continue
+            devices.append({"product": product, "vid_pid": f"{vid}:{pid}"})
+        except OSError:
+            continue
+    return devices
+
+
+def _refresh_all_usb_devices():
+    """Rescan sysfs USB devices for every fixed slot and cache on the slot dict."""
+    for slot in slots.values():
+        slot["_usb_devices"] = _scan_usb_devices(slot)
 
 
 def _slot_info(slot: dict) -> dict:
@@ -693,6 +810,7 @@ def _slot_info(slot: dict) -> dict:
     info = {k: v for k, v in slot.items() if not k.startswith("_")}
     info["recovering"] = slot["_recovering"]
     info["recover_retries"] = slot["_recover_retries"]
+    info["devnodes"] = list(slot.get("_devnodes", {}).values())
     info["has_gpio"] = slot.get("gpio_boot") is not None
     # Debug status
     label = slot.get("label") or slot.get("slot_key", "")[-20:]
@@ -704,6 +822,30 @@ def _slot_info(slot: dict) -> dict:
         info["debug_gdb_port"] = sess.get("gdb_port")
     else:
         info["debugging"] = False
+    # Always expose detected chip (persists after debug stop)
+    info["detected_chip"] = slot.get("_auto_debug_chip")
+    # Cached USB device info (updated on hotplug and boot)
+    usb_devs = slot.get("_usb_devices", [])
+    info["usb_devices"] = usb_devs
+    # Detect debug probes and HID devices
+    usb_warning = None
+    is_probe = False
+    PROBE_VIDS = {"0403"}  # FTDI (ESP-Prog, etc.)
+    if usb_devs:
+        probe_devs = [d for d in usb_devs
+                      if d.get("vid_pid", "").split(":")[0] in PROBE_VIDS]
+        hid_devs = [d for d in usb_devs
+                     if "hid" in d.get("product", "").lower()
+                     or "keyboard" in d.get("product", "").lower()
+                     or "mouse" in d.get("product", "").lower()]
+        if probe_devs and not any(
+                d for d in usb_devs if d not in probe_devs):
+            is_probe = True
+        if hid_devs:
+            names = ", ".join(d["product"] for d in hid_devs)
+            usb_warning = f"Not flashable — USB in HID mode: {names}"
+    info["usb_warning"] = usb_warning
+    info["is_probe"] = is_probe
     return info
 
 
@@ -1269,6 +1411,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         for slot in slots.values():
             _refresh_slot_health(slot)
             infos.append(_slot_info(slot))
+        # Sort by label so SLOT1-4 always appear in order
+        infos.sort(key=lambda s: s.get("label", ""))
         self._send_json({"slots": infos, "host_ip": host_ip, "hostname": hostname})
 
     def _handle_get_info(self):
@@ -1302,11 +1446,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "missing id_path and devpath"}, 400)
             return
 
-        # Look up or create slot
-        if slot_key not in slots:
+        # Look up slot — match against fixed slot prefixes first
+        fixed = _find_fixed_slot_for_key(slot_key)
+        if fixed:
+            slot = fixed
+        elif slot_key not in slots:
             slots[slot_key] = _make_dynamic_slot(slot_key)
-
-        slot = slots[slot_key]
+            slot = slots[slot_key]
+        else:
+            slot = slots[slot_key]
         lock = slot["_lock"]
 
         # Update event bookkeeping (always, even for unknown slots)
@@ -1379,8 +1527,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _start_flap_recovery(slot)
 
         if action == "add":
+            slot["_devnodes"][slot_key] = devnode
             slot["present"] = True
-            slot["devnode"] = devnode
+            if not slot["devnode"]:
+                slot["devnode"] = devnode  # first devnode becomes primary
+            if slot["tcp_port"]:
+                slot["url"] = f"rfc2217://{host_ip}:{slot['tcp_port']}"
             if not slot["flapping"]:
                 slot["state"] = STATE_IDLE
 
@@ -1416,13 +1568,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         _tel = s.get("openocd_telnet_port")
                         _lbl = s.get("label")
                     # Auto-start OpenOCD (outside lock — detect_chip is slow)
+                    # Wait for proxy to stabilize before probing JTAG
                     if _should_debug:
+                        time.sleep(3)
                         try:
                             chip = debug_controller.detect_chip()
                             if chip:
                                 with lk:
-                                    if (s["present"] and s["running"]
-                                            and not s["flapping"]):
+                                    if (s["present"] and not s["flapping"]):
+                                        # Restart proxy if detection killed it
+                                        if not s["running"] or not _is_process_alive(s.get("pid")):
+                                            start_proxy(s)
+                                            time.sleep(1)
                                         r = debug_controller.start(
                                             _lbl, s, _gdb, _tel, chip)
                                         if r.get("ok"):
@@ -1430,25 +1587,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                             log_activity(
                                                 f"Auto-debug: {_lbl} ({chip}) "
                                                 f"GDB:{_gdb}", "ok")
+                            else:
+                                # Detection failed — ensure proxy still alive
+                                with lk:
+                                    if (s["present"] and not s["flapping"]
+                                            and (not s["running"]
+                                                 or not _is_process_alive(
+                                                     s.get("pid")))):
+                                        start_proxy(s)
                         except Exception as e:
                             print(f"[portal] auto-debug failed: {e}",
                                   flush=True)
+                            # Ensure proxy survives even if debug fails
+                            with lk:
+                                if (s["present"] and not s["flapping"]
+                                        and (not s["running"]
+                                             or not _is_process_alive(
+                                                 s.get("pid")))):
+                                    start_proxy(s)
                 threading.Thread(target=_bg_start, daemon=True).start()
 
         elif action == "remove":
-            slot["present"] = False
-            if not slot["flapping"]:
-                slot["state"] = STATE_ABSENT
+            # Remove this devnode from the slot's set
+            slot["_devnodes"].pop(slot_key, None)
+            # Only go absent if no devnodes remain
+            if not slot["_devnodes"]:
+                slot["present"] = False
+                slot["devnode"] = None
+                slot["_auto_debug_chip"] = None
+                if not slot["flapping"]:
+                    slot["state"] = STATE_ABSENT
+            else:
+                # Other devnodes still active — update primary if needed
+                if slot["devnode"] == devnode:
+                    slot["devnode"] = next(iter(slot["_devnodes"].values()))
             # Stop debug session if active (preserves _auto_debug_chip
             # so debug auto-restarts on next hotplug add after flash)
             _rm_label = slot.get("label")
             if _rm_label and debug_controller.is_debugging(_rm_label):
                 debug_controller.stop(_rm_label)
-            if slot["running"]:
+            # Stop proxy if no devnodes left or the removed one was primary
+            if slot["running"] and not slot["_devnodes"]:
                 def _bg_stop(s=slot, lk=lock):
                     with lk:
                         stop_proxy(s)
                 threading.Thread(target=_bg_stop, daemon=True).start()
+
+        # Rescan USB devices for all slots (a change on one port can
+        # affect what's visible — e.g. sub-hub appearing/disappearing)
+        _refresh_all_usb_devices()
 
         log_activity(
             f"USB {action}: {label} ({devnode or '?'})",
@@ -2363,7 +2550,7 @@ _UI_HTML = """\
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RFC2217 Serial Portal</title>
+    <title>RFC2217 Embedded Workbench</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html { height: 100%; }
@@ -2375,15 +2562,16 @@ _UI_HTML = """\
             padding: 20px;
             display: flex; flex-direction: column;
         }
-        h1 { text-align: center; margin-bottom: 30px; color: #00d4ff; }
+        h1 { text-align: center; margin-bottom: 5px; color: #00d4ff; }
+        .subtitle { text-align: center; color: #aaa; font-size: 1.2em; margin-bottom: 20px; font-family: monospace; }
         h2 { color: #00d4ff; margin: 30px 0 15px; text-align: center; }
         .main-content {
-            max-width: 1000px; margin: 0 auto; width: 100%;
+            max-width: 1600px; margin: 0 auto; width: 100%;
             display: flex; flex-direction: column; flex: 1; min-height: 0;
         }
         .slots {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
             gap: 20px;
         }
         .slot {
@@ -2436,6 +2624,14 @@ _UI_HTML = """\
         .url-box:hover { background: #1a4a7a; }
         .url-box.empty { color: #666; cursor: default; }
         .copied { background: #00d4ff !important; color: #1a1a2e !important; }
+        .debug-active { color: #2ecc71; font-weight: bold; }
+        .debug-active span { color: #2ecc71 !important; font-family: monospace; }
+        .debug-idle { color: #888; }
+        .debug-idle span { color: #888 !important; }
+        .usb-device { color: #b388ff; }
+        .usb-device span { color: #b388ff !important; font-family: monospace; }
+        .probe-info { color: #2ecc71; font-weight: bold; padding: 6px 10px; background: rgba(46,204,113,0.1); border-radius: 4px; margin-top: 8px; }
+        .usb-warning { color: #ff6b6b; font-weight: bold; padding: 6px 10px; background: rgba(255,107,107,0.1); border-radius: 4px; margin-top: 8px; }
         .error { color: #ff6b6b; font-size: 0.85em; margin-top: 10px; }
         .flap-warning {
             color: #e74c3c; font-weight: bold; padding: 6px 10px;
@@ -2546,7 +2742,8 @@ _UI_HTML = """\
     </style>
 </head>
 <body>
-    <h1 id="title">RFC2217 Serial Portal</h1>
+    <h1 id="title">RFC2217 Embedded Workbench</h1>
+    <div class="subtitle" id="subtitle"></div>
     <div class="main-content">
     <div class="slots" id="slots"></div>
     <div class="test-section" id="test-section">
@@ -2591,8 +2788,15 @@ async function fetchDevices() {
         hostName = data.hostname || '';
         hostIp = data.host_ip || '';
         if (hostName) {
-            document.getElementById('title').textContent = hostName + ' — Serial Portal';
-            document.title = hostName + ' — Serial Portal';
+            document.getElementById('title').textContent = 'Embedded Workbench';
+            document.title = 'Embedded Workbench';
+        }
+        // Show GPIO config in subtitle (Pi-level, not per-slot)
+        const gpioSlot = data.slots.find(s => s.has_gpio);
+        if (gpioSlot) {
+            let gpio = 'GPIO: BOOT=' + (gpioSlot.gpio_boot ?? '?');
+            if (gpioSlot.gpio_en != null) gpio += ', EN=' + gpioSlot.gpio_en;
+            document.getElementById('subtitle').textContent = gpio;
         }
         renderSlots(data.slots);
         document.getElementById('info').textContent =
@@ -2638,6 +2842,10 @@ function renderSlots(slots) {
             actionBtns = '<div class="slot-actions">' +
                 '<button class="btn-release" onclick="releaseSlot(\\'' + label + '\\')">Release &amp; Reboot</button>' +
                 '</div>';
+        } else if (s.is_probe) {
+            statusMsg = '<div class="probe-info">&#10003; ESP-Prog debug probe</div>';
+        } else if (s.usb_warning) {
+            statusMsg = '<div class="usb-warning">&#9888; ' + s.usb_warning + '</div>';
         } else if (s.flapping && !s.recovering) {
             statusMsg = '<div class="flap-warning">&#9888; Device is boot-looping.' +
                 (s.recover_retries >= 2 ? ' Needs manual intervention.' : '') +
@@ -2656,7 +2864,9 @@ function renderSlots(slots) {
                 <div>Port: <span>${s.tcp_port || '-'}</span></div>
                 <div>Device: <span>${s.devnode || 'None'}</span></div>
                 ${s.pid ? '<div>PID: <span>' + s.pid + '</span></div>' : ''}
-                ${s.has_gpio ? '<div>GPIO: <span>BOOT=' + (s.gpio_boot ?? '?') + (s.gpio_en != null ? ', EN=' + s.gpio_en : '') + '</span></div>' : ''}
+                ${s.detected_chip ? '<div>Chip: <span>' + s.detected_chip + '</span></div>' : ''}
+                ${s.debugging ? '<div class="debug-active">Debug: <span>GDB :' + s.debug_gdb_port + '</span></div>' : (s.detected_chip ? '<div class="debug-idle">Debug: <span>idle</span></div>' : '')}
+                ${(s.usb_devices || []).map(d => '<div class="usb-device">USB: <span>' + d.product + '</span></div>').join('')}
             </div>
             <div class="url-box ${s.running || st === 'idle' || st === 'download_mode' ? '' : 'empty'}"
                  onclick="${s.running || st === 'idle' ? "copyUrl('" + copyTarget + "',this)" : ''}">
@@ -2894,6 +3104,9 @@ def main():
 
     # Scan for devices already plugged in at boot (auto-assigns ports)
     scan_existing_devices()
+
+    # Initial USB device scan for all slots
+    _refresh_all_usb_devices()
 
     # Load debug probe configuration from global config
     debug_controller.load_probes(_global_config.get("debug_probes", []))

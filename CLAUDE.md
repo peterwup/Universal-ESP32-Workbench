@@ -22,11 +22,11 @@ pi/
   cw_beacon.py                # CW beacon (GPCLK Morse transmitter for DF testing)
   systemd/                    # systemd service unit
 pytest/
-  wifi_tester_driver.py       # WiFiTesterDriver class for test scripts
+  esp32_workbench_driver.py   # ESP32WorkbenchDriver class for test scripts
   conftest.py                 # pytest fixtures
   test_instrument.py          # Self-tests for the instrument
 docs/
-  Serial-Portal-FSD.md        # Full functional specification
+  Universal-ESP32-Workbench-FSD.md  # Full functional specification
 container/                    # Alternate devcontainer config
 skills/esp32-test-harness/    # Claude Code skill
 skills/cw-beacon/             # CW beacon skill (GPCLK Morse for DF testing)
@@ -62,20 +62,24 @@ mypy --strict .
 
 ## Specifications
 
-- `docs/Serial-Portal-FSD.md` -- Full functional specification (serial proxy + WiFi tester)
+- `docs/Universal-ESP32-Workbench-FSD.md` -- Full functional specification (Embedded Workbench)
 
 ## Key Conventions
 
-- Portal runs on port 8080, serial RFC2217 on ports 4001+
+- 3 fixed slots (SLOT1-SLOT3) mapped to physical USB hub ports via `usb_prefix` in `workbench.json`
+- Dual-USB boards (ESP32-S3 with sub-hub) map both interfaces to the same slot
+- Portal runs on port 8080, serial RFC2217 on ports 4001-4003, GDB on 3333-3335
 - WiFi modes: AP (Pi hosts 192.168.4.0/24) or STA (Pi joins DUT network)
 - GPIO pin allowlist: `{5,6,12,13,16,17,18,19,20,21,22,23,24,25,26}`
 - Always release GPIO pins after use: `gpio_set(pin, "z")`
 - One RFC2217 client per serial device at a time
 - ESP32-C3 reset: use `--after=watchdog-reset` with esptool, never `hard-reset`
 - Environment variable `SERIAL_PI=192.168.0.87` set in devcontainer
+- Deploy portal to Pi: `scp pi/portal.py pi@192.168.0.87:/tmp/portal.py && ssh pi@192.168.0.87 'sudo cp /tmp/portal.py /usr/local/bin/rfc2217-portal && sudo systemctl restart rfc2217-portal'`
 
 ## Gotchas / Do Not
 
+- Do NOT SSH into the Pi to interact with the workbench -- always use the HTTP API at :8080. The `ESP32WorkbenchDriver` in `pytest/esp32_workbench_driver.py` wraps all API calls. SSH is only for deploying code updates to `/usr/local/bin/rfc2217-portal`.
 - Do NOT use `hard-reset` after mode with ESP32-C3 -- it gets stuck in download mode
 - udev events require `systemd-run --no-block` to reach the portal process
 - wlan0 is reserved for testing -- use eth0 (USB Ethernet) for LAN

@@ -105,7 +105,7 @@ When a workbench is available. Use serial flashing when:
 
 ### Discover devices and slot
 
-Slots are auto-discovered from USB hotplug events. The RFC2217 port is assigned dynamically -- always read it from `/api/devices`, never hardcode a port number.
+Slots are mapped to physical USB hub ports via prefix matching (configured in `workbench.json`). There are 3 fixed slots: SLOT1 (:4001), SLOT2 (:4002), SLOT3 (:4003). Always read the slot info from `/api/devices` to verify the device is present.
 
 ```bash
 curl -s http://esp32-workbench.local:8080/api/devices | jq .

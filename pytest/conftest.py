@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from wifi_tester_driver import WiFiTesterDriver
+from esp32_workbench_driver import ESP32WorkbenchDriver
 
 
 def pytest_addoption(parser):
@@ -42,11 +42,19 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_dut)
 
 
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Attach test outcome to the node so fixtures can read it."""
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f"rep_{rep.when}", rep)
+
+
 @pytest.fixture(scope="session")
-def wifi_tester(request):
+def workbench(request):
     """Session-scoped connection to the WiFi Tester instrument."""
     url = request.config.getoption("--wt-url")
-    driver = WiFiTesterDriver(url)
+    driver = ESP32WorkbenchDriver(url)
     driver.open()
     driver.ping()
     yield driver
@@ -58,11 +66,11 @@ def wifi_tester(request):
 
 
 @pytest.fixture
-def wifi_network(wifi_tester):
+def wifi_network(workbench):
     """Start a fresh AP for this test, stop on teardown."""
     ssid = f"WT-{uuid.uuid4().hex[:6].upper()}"
     password = "testpass123"
-    wifi_tester.drain_events()
-    wifi_tester.ap_start(ssid, password)
+    workbench.drain_events()
+    workbench.ap_start(ssid, password)
     yield {"ssid": ssid, "password": password, "ap_ip": "192.168.4.1"}
-    wifi_tester.ap_stop()
+    workbench.ap_stop()

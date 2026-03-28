@@ -67,7 +67,7 @@ and reporting station events — all controlled over the same HTTP API.
 | Component | Details |
 |-----------|---------|
 | Raspberry Pi Zero W | esp32-workbench.local, onboard wlan0 radio |
-| USB Hub | 3-port hub connected to single USB port |
+| USB Hub | 4-port hub connected to single USB port |
 | USB Ethernet adapter | eth0 — wired LAN for management and serial traffic |
 | Devices | ESP32, Arduino, or any USB serial device |
 | GPIO wiring | Pi GPIO 17 → DUT EN/RST (reset, active LOW); Pi GPIO 18 → DUT GPIO0/GPIO9 (boot select, active LOW); Pi GPIO 27 → Spare 1; Pi GPIO 22 → Spare 2 |
@@ -179,8 +179,9 @@ that disables the WiFi test service entirely (see §1.4).
 
 | Entity | Description |
 |--------|-------------|
-| **Slot** | One physical connector position on the USB hub |
-| **slot_key** | Stable identifier for physical port topology (derived from udev `ID_PATH`) |
+| **Slot** | One of 3 fixed positions (SLOT1–SLOT3) pre-created at boot from `workbench.json`. Each slot is mapped to a physical USB hub port by prefix match and is always visible in the UI. A slot can track multiple devnodes when a dual-USB board (e.g., ESP32-S3 with sub-hub) is connected. |
+| **slot_key** | Stable identifier for physical port topology (derived from udev `ID_PATH`). Multiple slot_keys can map to the same slot via prefix matching (e.g., `0:1.1:1.0` and `0:1.1.4:1.0` both match SLOT1's prefix `0:1.1`). |
+| **usb_prefix** | Substring of `ID_PATH` that identifies a physical hub port (configured in `workbench.json`). Longer prefixes match first, so a sub-hub port like `0:1.1.4` can be distinguished from its parent `0:1.1`. |
 | **devnode** | Current tty device path (e.g., `/dev/ttyACM0`) — may change on reconnect |
 | **proxy** | RFC2217 server process for a serial device: `plain_rfc2217_server.py` for all devices (direct DTR/RTS passthrough) |
 | **seq** (sequence) | Global monotonically increasing counter, incremented on every hotplug event |
@@ -228,27 +229,60 @@ USB-Serial/JTAG controller disconnects and reconnects.  This triggers a
 the proxy is stopped on `remove` and restarted on `add` (with the 2s
 ttyACM boot delay).  No manual intervention is required.
 
-**Boot scan:** On startup, portal scans `/dev/ttyACM*` and `/dev/ttyUSB*`,
-queries `udevadm info` for each, and starts proxies for any device matching a
-configured slot.
+**Fixed slot pre-creation:** On startup, the portal loads slot definitions from
+`workbench.json` and pre-creates 3 fixed slots (SLOT1–SLOT3), each with a
+`usb_prefix` that maps to a physical USB hub port. Slots are always visible
+in `/api/devices` and the web UI, even when no devices are connected
+(state = `absent`).
+
+**USB prefix matching:** When a device's `slot_key` (from udev `ID_PATH`)
+contains a slot's `usb_prefix`, that device belongs to that slot. Longer
+prefixes match first. Multiple devices can map to the same slot (dual-USB
+boards with sub-hubs). Each slot tracks all its devnodes and remains
+`present` as long as any devnode is active.
+
+**Boot scan:** The portal scans `/dev/ttyACM*` and `/dev/ttyUSB*`, queries
+`udevadm info` for each, and maps each device to its fixed slot by prefix.
+The first devnode to arrive becomes the primary (used for the RFC2217 proxy).
+
+**Hotplug:** On add, the portal matches the `slot_key` against configured
+prefixes and adds the devnode to the matching slot. On remove, the devnode
+is removed from the slot's set — the slot only goes absent when all devnodes
+are gone. If no prefix matches, a dynamic slot (AUTO-N) is created.
+
+**USB device scanning:** After every hotplug event and at boot, the portal
+scans sysfs (`/sys/bus/usb/devices/`) for all USB devices on each slot's
+prefix. This includes non-serial devices (HID keyboards, mass storage) which
+are reported in the `usb_devices` field of `/api/devices`.
 
 ### FR-002 — Slot Configuration
 
-**Note (v8.3):** Static slot configuration is no longer required. All USB serial devices are auto-discovered and auto-assigned labels, TCP ports, and GDB ports. The workbench.json file is only needed for GPIO pin assignments and ESP-Prog probe definitions.
-
-Static configuration maps `slot_key` → `{label, tcp_port}`.
+**Note (v9):** Slots are configured in `workbench.json` with USB path prefixes
+that map physical hub ports to fixed labels. The portal pre-creates all
+configured slots at boot. Devices are matched to slots by prefix — no manual
+slot assignment needed at runtime. Dual-USB boards (sub-hub) are handled
+transparently via prefix matching.
 
 Configuration file: `/etc/rfc2217/workbench.json`
 
 ```json
 {
+  "gpio_boot": 18,
+  "gpio_en": 17,
   "slots": [
-    {"label": "SLOT1", "slot_key": "platform-3f980000.usb-usb-0:1.1:1.0", "tcp_port": 4001},
-    {"label": "SLOT2", "slot_key": "platform-3f980000.usb-usb-0:1.3:1.0", "tcp_port": 4002},
-    {"label": "SLOT3", "slot_key": "platform-3f980000.usb-usb-0:1.4:1.0", "tcp_port": 4003}
+    {"label": "SLOT1", "usb_prefix": "0:1.1", "tcp_port": 4001, "gdb_port": 3333, "openocd_telnet_port": 4444},
+    {"label": "SLOT2", "usb_prefix": "0:1.3", "tcp_port": 4002, "gdb_port": 3334, "openocd_telnet_port": 4445},
+    {"label": "SLOT3", "usb_prefix": "0:1.4", "tcp_port": 4003, "gdb_port": 3335, "openocd_telnet_port": 4446}
+  ],
+  "debug_probes": [
+    {"label": "PROBE1", "type": "esp-prog", "interface_config": "interface/ftdi/esp_ftdi.cfg", "bus_port": "1-1.4:1.0"}
   ]
 }
 ```
+
+The `usb_prefix` is a substring of the udev `ID_PATH`. Discover it by
+plugging a device into each physical port and running:
+`udevadm info -q property -n /dev/ttyACMx | grep ID_PATH`
 
 ### FR-003 — Serial API
 
@@ -269,11 +303,12 @@ Configuration file: `/etc/rfc2217/workbench.json`
   "slots": [
     {
       "label": "SLOT1",
-      "slot_key": "platform-...-usb-0:1.1:1.0",
+      "slot_key": "_fixed_SLOT1",
       "tcp_port": 4001,
       "present": true,
       "running": true,
       "devnode": "/dev/ttyACM0",
+      "devnodes": ["/dev/ttyACM0", "/dev/ttyACM1"],
       "pid": 1234,
       "url": "rfc2217://esp32-workbench.local:4001",
       "seq": 5,
@@ -282,9 +317,14 @@ Configuration file: `/etc/rfc2217/workbench.json`
       "last_error": null,
       "flapping": false,
       "state": "idle",
+      "detected_chip": "esp32s3",
       "debugging": false,
       "debug_chip": null,
-      "debug_gdb_port": null
+      "debug_gdb_port": null,
+      "usb_devices": [
+        {"product": "USB JTAG/serial debug unit", "vid_pid": "303a:1001"},
+        {"product": "USB Single Serial", "vid_pid": "1a86:55d3"}
+      ]
     }
   ],
   "host_ip": "esp32-workbench.local",
@@ -305,11 +345,13 @@ Configuration file: `/etc/rfc2217/workbench.json`
 ### FR-005 — Web Portal (Serial Section)
 
 - Display all 3 slots (always visible, even if empty)
-- Show slot status: RUNNING / PRESENT / EMPTY
-- Show current devnode and PID when running
+- Show slot status: RUNNING / IDLE / ABSENT / RECOVERING / DOWNLOAD MODE
+- Show current devnode(s) and PID when running
+- Show detected chip type (e.g., ESP32-C6) when identified via JTAG
+- Show debug status: active GDB port or idle
+- Show USB devices on each physical port (including HID, mass storage)
+- Show GPIO config (BOOT/EN pins) in header subtitle
 - Copy RFC2217 URL to clipboard (hostname and IP variants)
-- Start/stop individual slots
-- Display connection examples
 
 ### FR-006 — ESP32-C3 Native USB-Serial/JTAG Support
 
@@ -588,7 +630,7 @@ spawns a new proxy thread for every "add" event, and the udev event flood
 
 ```python
 FLAP_WINDOW_S = 30       # Look at events within this window
-FLAP_THRESHOLD = 6       # 6 events in 30s = 3 connect/disconnect cycles
+FLAP_THRESHOLD = 10      # 10 events in 30s — allows dual-USB devices (2 events per plug)
 FLAP_COOLDOWN_S = 10     # Cooldown before recovery attempt
 FLAP_MAX_RETRIES = 2     # Max no-GPIO recovery attempts
 ```

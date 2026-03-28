@@ -4,7 +4,7 @@
 
 A Raspberry Pi that turns into a complete remote test instrument for ESP32 devices. Plug boards into its USB hub and control everything -- serial, debug, WiFi, BLE, GPIO, firmware updates -- over the network through a single HTTP API.
 
-Zero-config by design: the workbench auto-detects every USB device, assigns a serial port, identifies the chip, and starts OpenOCD for GDB debugging. No slot files, no port mappings, no manual setup.
+Zero-config by design: the portal pre-creates 3 fixed slots (SLOT1--SLOT3) at boot, each mapped to a physical USB hub port. Slots are always visible in the web UI even when empty. Plug in a device and it automatically maps to the correct slot by USB path, gets a serial port, chip identification, and OpenOCD for GDB debugging. Dual-USB boards (ESP32-S3 with sub-hub) are handled transparently -- both interfaces map to the same slot.
 
 ---
 
@@ -30,19 +30,28 @@ That's it. The installer sets up all dependencies (pyserial, hostapd, dnsmasq, b
 curl http://esp32-workbench.local:8080/api/devices | jq
 ```
 
-The response includes the auto-assigned serial URL and GDB port:
+The response includes all 3 slots with serial URLs, chip info, debug status, and USB devices:
 
 ```json
 {
   "slots": [
     {
       "label": "SLOT1",
-      "status": "running",
-      "serial_url": "rfc2217://esp32-workbench.local:4001?ign_set_control",
-      "debug_chip": "esp32c3",
-      "debug_gdb_port": 3335,
-      "debugging": true
-    }
+      "state": "idle",
+      "running": true,
+      "url": "rfc2217://esp32-workbench.local:4001?ign_set_control",
+      "detected_chip": "esp32s3",
+      "debugging": true,
+      "debug_chip": "esp32s3",
+      "debug_gdb_port": 3333,
+      "devnodes": ["/dev/ttyACM0", "/dev/ttyACM1"],
+      "usb_devices": [
+        {"product": "USB JTAG/serial debug unit", "vid_pid": "303a:1001"},
+        {"product": "USB Single Serial", "vid_pid": "1a86:55d3"}
+      ]
+    },
+    { "label": "SLOT2", "state": "absent", "running": false, "detected_chip": null },
+    { "label": "SLOT3", "state": "absent", "running": false, "detected_chip": null }
   ]
 }
 ```
@@ -94,7 +103,7 @@ GPIO wiring is optional. Without it, the workbench still provides serial and deb
   +----+----+----+
   |    |    |    |
  :4001 :4002 :4003
- auto  auto  auto
+ SLOT1 SLOT2 SLOT3
 ```
 
 eth0 carries all management traffic (HTTP API, RFC2217 serial). wlan0 is dedicated to WiFi testing. They never overlap.
@@ -115,7 +124,7 @@ eth0 carries all management traffic (HTTP API, RFC2217 serial). wlan0 is dedicat
 
 ### 1. Remote Serial (RFC2217)
 
-Each USB device gets an **auto-assigned TCP port** when plugged in. The workbench tracks devices by their physical USB path, so swapping boards into the same connector keeps the same port. One client at a time per device.
+Each physical USB hub port is mapped to a fixed slot (SLOT1--SLOT3) via USB path prefix in `workbench.json`. The same port always gets the same slot label and TCP port. Dual-USB boards (ESP32-S3 with built-in hub) expose multiple interfaces on the same slot. One RFC2217 client at a time per device.
 
 Works with esptool, PlatformIO, ESP-IDF, and any pyserial-based tool.
 
@@ -213,7 +222,12 @@ Generates a **Morse-keyed RF carrier** on GPIO 5 or GPIO 6 using the BCM2835 har
 
 ### 10. Web Portal
 
-A browser-based dashboard at **http://pi-ip:8080** showing serial slot status, WiFi state, activity log, test progress, and human interaction modal.
+A browser-based dashboard at **http://pi-ip:8080** showing all 3 serial slots, WiFi state, activity log, test progress, and human interaction modal. Each slot card shows:
+- Connection status (RUNNING / IDLE / ABSENT / RECOVERING / DOWNLOAD MODE)
+- Detected chip type (e.g., ESP32-C6) when identified via JTAG
+- Debug status (active GDB port or idle)
+- USB devices on this physical port (including non-serial devices like HID keyboards)
+- Device node, PID
 
 ---
 
@@ -518,23 +532,19 @@ docs/
 
 ## Configuration Reference: workbench.json
 
-The config file at `/etc/rfc2217/workbench.json` is **optional**. The workbench works fully without it -- devices are auto-detected, serial ports auto-assigned, and USB JTAG debug auto-started.
-
-You only need `workbench.json` if you have:
-- GPIO wires connecting Pi pins to DUT EN/BOOT (for scripted reset/boot-mode control)
-- An ESP-Prog probe (for debugging classic ESP32 boards without USB JTAG)
+The config file at `/etc/rfc2217/workbench.json` maps physical USB hub ports to fixed slot labels and assigns GPIO pins and debug probes.
 
 ```json
 {
   "gpio_boot": 18,
   "gpio_en": 17,
+  "slots": [
+    {"label": "SLOT1", "usb_prefix": "0:1.1", "tcp_port": 4001, "gdb_port": 3333, "openocd_telnet_port": 4444},
+    {"label": "SLOT2", "usb_prefix": "0:1.3", "tcp_port": 4002, "gdb_port": 3334, "openocd_telnet_port": 4445},
+    {"label": "SLOT3", "usb_prefix": "0:1.4", "tcp_port": 4003, "gdb_port": 3335, "openocd_telnet_port": 4446}
+  ],
   "debug_probes": [
-    {
-      "label": "PROBE1",
-      "type": "esp-prog",
-      "interface_config": "interface/ftdi/esp_ftdi.cfg",
-      "bus_port": "1-1.4:1.0"
-    }
+    {"label": "PROBE1", "type": "esp-prog", "interface_config": "interface/ftdi/esp_ftdi.cfg", "bus_port": "1-1.4:1.0"}
   ]
 }
 ```
@@ -543,6 +553,12 @@ You only need `workbench.json` if you have:
 |-------|------|-------------|
 | `gpio_boot` | int or null | Pi BCM GPIO pin wired to DUT BOOT/GPIO0/GPIO9. Omit if not wired. |
 | `gpio_en` | int or null | Pi BCM GPIO pin wired to DUT EN/RST. Omit if not wired. |
+| `slots` | array | Fixed slot definitions mapping USB hub ports to labels and network ports. |
+| `slots[].label` | string | Slot name shown in UI (e.g., `"SLOT1"`) |
+| `slots[].usb_prefix` | string | USB path prefix from udev `ID_PATH` (e.g., `"0:1.1"` matches `0:1.1:1.0` and `0:1.1.4:1.0`). Discover with `udevadm info -q property -n /dev/ttyACMx`. |
+| `slots[].tcp_port` | int | RFC2217 TCP port for this slot |
+| `slots[].gdb_port` | int | GDB port for OpenOCD |
+| `slots[].openocd_telnet_port` | int | OpenOCD telnet port |
 | `debug_probes` | array | ESP-Prog probe definitions. Omit or leave empty if using USB JTAG only. |
 | `debug_probes[].label` | string | Human-readable probe name |
 | `debug_probes[].type` | string | Probe type (`"esp-prog"`) |

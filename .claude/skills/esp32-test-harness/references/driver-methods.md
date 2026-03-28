@@ -1,4 +1,4 @@
-# WiFiTesterDriver Methods Reference
+# ESP32WorkbenchDriver Methods Reference
 
 ## Slot state & devices
 
