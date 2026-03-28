@@ -4,7 +4,7 @@ RFC2217 Portal v4 — Proxy Supervisor with Serial Services
 
 HTTP server that tracks USB serial device hotplug events and manages
 plain_rfc2217_server.py lifecycle.  On hotplug add → start proxy; on remove → stop it.
-Slot configuration is loaded from slots.json.
+Hardware config loaded from workbench.json (GPIO pins, debug probes).
 """
 
 import http.server
@@ -28,7 +28,7 @@ except ImportError:
     ble_controller = None
 
 PORT = 8080
-CONFIG_FILE = os.environ.get("RFC2217_CONFIG", "/etc/rfc2217/slots.json")
+CONFIG_FILE = os.environ.get("RFC2217_CONFIG", "/etc/rfc2217/workbench.json")
 PROXY_EXE = "/usr/local/bin/plain_rfc2217_server.py"
 
 # Auto-assignment port ranges
@@ -306,50 +306,39 @@ def start_beacon():
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Global config (loaded from slots.json, optional)
+# Global config (loaded from workbench.json, optional)
 _global_config: dict = {}
 
 
 def load_config(path: str) -> dict[str, dict]:
-    """Parse slots.json for global config (GPIO, probes). Slots are auto-managed.
+    """Load workbench.json hardware config. All fields default to None/empty.
 
-    slots.json is optional. If present, it provides:
-      - gpio_boot, gpio_en: Pi GPIO pins for DUT reset/boot control (global)
-      - debug_probes: ESP-Prog probe definitions
-      - slots: optional pre-configured slot overrides (legacy compatibility)
+    workbench.json provides:
+      - gpio_boot: Pi BCM GPIO pin wired to DUT BOOT (None if not wired)
+      - gpio_en: Pi BCM GPIO pin wired to DUT EN/RST (None if not wired)
+      - debug_probes: ESP-Prog probe definitions (empty if none)
     """
     global _global_config
-    result: dict[str, dict] = {}
+    _global_config = {"gpio_boot": None, "gpio_en": None, "debug_probes": []}
     try:
         with open(path) as f:
             cfg = json.load(f)
-        _global_config = {
-            "gpio_boot": cfg.get("gpio_boot"),
-            "gpio_en": cfg.get("gpio_en"),
-            "debug_probes": cfg.get("debug_probes", []),
-        }
-        # Legacy: pre-configured slots (optional, for backward compat)
-        for entry in cfg.get("slots", []):
-            key = entry["slot_key"]
-            result[key] = _make_slot(
-                slot_key=key,
-                label=entry.get("label"),
-                tcp_port=entry.get("tcp_port"),
-                gdb_port=entry.get("gdb_port"),
-                openocd_telnet_port=entry.get("openocd_telnet_port"),
-                group=entry.get("group"),
-                role=entry.get("role"),
-            )
-        if result:
-            print(f"[portal] loaded {len(result)} pre-configured slot(s)", flush=True)
-        if _global_config.get("gpio_boot"):
-            print(f"[portal] GPIO: boot={_global_config['gpio_boot']}, "
-                  f"en={_global_config['gpio_en']}", flush=True)
+        if cfg.get("gpio_boot"):
+            _global_config["gpio_boot"] = cfg["gpio_boot"]
+        if cfg.get("gpio_en"):
+            _global_config["gpio_en"] = cfg["gpio_en"]
+        if cfg.get("debug_probes"):
+            _global_config["debug_probes"] = cfg["debug_probes"]
+        gb = _global_config["gpio_boot"]
+        ge = _global_config["gpio_en"]
+        probes = len(_global_config["debug_probes"])
+        print(f"[portal] config: gpio_boot={gb}, gpio_en={ge}, "
+              f"probes={probes}", flush=True)
     except FileNotFoundError:
-        print(f"[portal] no config file ({path}) — fully automatic mode", flush=True)
+        print(f"[portal] no config file — GPIO=none, probes=none", flush=True)
     except Exception as exc:
-        print(f"[portal] error loading config: {exc}", flush=True)
-    return result
+        print(f"[portal] config error: {exc}", flush=True)
+    return {}
 
 
 def _next_available_port(base: int, used_attr: str) -> int:
@@ -1450,11 +1439,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             slot["present"] = False
             if not slot["flapping"]:
                 slot["state"] = STATE_ABSENT
-            # Stop debug session if active
+            # Stop debug session if active (preserves _auto_debug_chip
+            # so debug auto-restarts on next hotplug add after flash)
             _rm_label = slot.get("label")
             if _rm_label and debug_controller.is_debugging(_rm_label):
                 debug_controller.stop(_rm_label)
-            slot["_auto_debug_chip"] = None
             if slot["running"]:
                 def _bg_stop(s=slot, lk=lock):
                     with lk:
@@ -2276,7 +2265,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         result = debug_controller.stop(slot_label)
         slot = _find_slot_by_label(slot_label)
         if slot:
-            slot["_auto_debug_chip"] = None  # prevent auto-restart
             if slot["state"] == STATE_DEBUGGING:
                 slot["state"] = STATE_IDLE if slot["present"] else STATE_ABSENT
             log_activity(f"Debug stopped: {slot_label}", "info")

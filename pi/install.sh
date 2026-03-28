@@ -108,9 +108,9 @@ chmod +x /usr/local/bin/wifi-lease-notify.sh
 # ---------------------------------------------------------------------------
 # 6. Install config files (don't overwrite existing)
 # ---------------------------------------------------------------------------
-if [ ! -f /etc/rfc2217/slots.json ]; then
+if [ ! -f /etc/rfc2217/workbench.json ]; then
     echo "Installing default slot config..."
-    cp "$SCRIPT_DIR/config/slots.json" /etc/rfc2217/slots.json
+    cp "$SCRIPT_DIR/config/workbench.json" /etc/rfc2217/workbench.json
 else
     echo "Slot config already exists, skipping..."
 fi
@@ -156,5 +156,5 @@ echo "Portal running at: http://$(hostname -I | awk '{print $1}'):8080"
 echo ""
 echo "Next steps:"
 echo "  1. Discover slot keys:  rfc2217-learn-slots"
-echo "  2. Edit config:         sudo nano /etc/rfc2217/slots.json"
+echo "  2. Edit config:         sudo nano /etc/rfc2217/workbench.json"
 echo "  3. Restart portal:      sudo systemctl restart rfc2217-portal"
