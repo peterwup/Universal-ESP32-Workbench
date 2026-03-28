@@ -426,8 +426,8 @@ class TestUSBJTAGDebug:
         time.sleep(1)
         result = wifi_tester.debug_start()
         assert result["gdb_port"] > 0
-        assert result["chip"] in ("esp32c3", "esp32c6", "esp32h2", "esp32s3")
-        assert result["slot"].startswith("SLOT")
+        assert result["chip"] in ("esp32c3", "esp32c6", "esp32h2", "esp32s3", "esp32")
+        assert len(result["slot"]) > 0
         assert "gdb_target" in result
         wifi_tester.debug_stop()
 

@@ -658,7 +658,7 @@ def _slot_info(slot: dict) -> dict:
     info["recover_retries"] = slot["_recover_retries"]
     info["has_gpio"] = slot.get("gpio_boot") is not None
     # Debug status
-    label = slot.get("label")
+    label = slot.get("label") or slot.get("slot_key", "")[-20:]
     if label and debug_controller.is_debugging(label):
         sessions = debug_controller.status()
         sess = sessions.get(label, {})
@@ -675,9 +675,13 @@ def _slot_info(slot: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _find_slot_by_label(label: str) -> dict | None:
-    """Find a configured slot by its human-readable label."""
+    """Find a slot by label or truncated slot_key."""
     for s in slots.values():
         if s["label"] == label:
+            return s
+    # Fallback: match truncated slot_key (for dynamic/unconfigured slots)
+    for s in slots.values():
+        if s.get("slot_key", "")[-20:] == label:
             return s
     return None
 
@@ -2222,16 +2226,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_debug_status(self):
         sessions = debug_controller.status()
-        # Merge with slot info for non-debugging slots
         all_slots = {}
+        # Include all configured and dynamic slots
         for s in slots.values():
-            label = s.get("label")
+            label = s.get("label") or s.get("slot_key", "")[-20:]
             if not label:
                 continue
             if label in sessions:
                 all_slots[label] = sessions[label]
             else:
                 all_slots[label] = {"debugging": False}
+        # Include any sessions on labels not yet in all_slots
+        for label, info in sessions.items():
+            if label not in all_slots:
+                all_slots[label] = info
         self._send_json({"ok": True, "slots": all_slots})
 
     def _handle_debug_probes(self):
