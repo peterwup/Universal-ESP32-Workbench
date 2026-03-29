@@ -341,6 +341,125 @@ implemented in portal.py.
 
 ---
 
+## ESP32/Xtensa: Reading Registers and GPIOs
+
+On ESP32/Xtensa, all memory reads via OpenOCD require a CPU halt (unlike ARM
+which has an independent debug bus). This means reading GPIO or peripheral
+registers will briefly pause the CPU.
+
+**Be aware**: if the CPU is halted during an I2C or SPI transaction, the
+transaction will be corrupted. The slave device (e.g. SI4735, OLED) may hold
+SDA low, locking the bus. Recovery requires a power cycle. This is normal
+JTAG debugging behavior — accept it and power cycle when needed.
+
+### GPIO input registers
+
+```
+GPIO_IN_REG   0x3FF44038   — GPIO 0-31 input levels
+GPIO_IN1_REG  0x3FF4403C   — GPIO 32-39 input levels
+```
+
+### Reading via OpenOCD telnet
+
+```python
+import socket, time, re
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('192.168.0.87', 4444))
+time.sleep(0.3)
+s.recv(4096)  # banner
+
+s.sendall(b"halt\n"); time.sleep(0.05); s.recv(8192)
+s.sendall(b"mdw 0x3FF44038\n"); time.sleep(0.05)
+r1 = s.recv(4096).decode()
+s.sendall(b"mdw 0x3FF4403C\n"); time.sleep(0.05)
+r2 = s.recv(4096).decode()
+s.sendall(b"resume\n"); time.sleep(0.05); s.recv(4096)
+s.close()
+
+# Parse GPIO values from register
+v = int(re.search(r":\s*([0-9a-fA-F]+)", r1).group(1), 16)
+for pin in range(32):
+    print(f"GPIO{pin}: {(v >> pin) & 1}")
+```
+
+---
+
+## Source-Level Debugging with GDB
+
+### Prerequisites
+
+The PlatformIO GDB for ESP32 requires `libpython2.7.so.1.0`. Install it:
+
+```bash
+wget -q "http://deb.debian.org/debian/pool/main/p/python2.7/libpython2.7_2.7.18-8+deb11u1_amd64.deb" -O /tmp/libpython2.7.deb
+cd /tmp && dpkg -x libpython2.7.deb extracted
+sudo cp extracted/usr/lib/x86_64-linux-gnu/libpython2.7.so.1.0 /usr/lib/
+sudo ldconfig
+```
+
+GDB binary: `~/.platformio/packages/toolchain-xtensa-esp32/bin/xtensa-esp32-elf-gdb`
+
+### Setting breakpoints by source file and line
+
+```bash
+xtensa-esp32-elf-gdb firmware.elf \
+  -ex "target extended-remote 192.168.0.87:3333" \
+  -ex "monitor halt" \
+  -ex "break radio_controller.cpp:204" \
+  -ex "continue"
+```
+
+When the breakpoint hits, inspect variables, backtrace, and continue:
+
+```
+(gdb) bt                          # backtrace
+(gdb) print variable_name         # inspect variable
+(gdb) info locals                 # all local variables
+(gdb) continue                    # resume execution
+```
+
+### Setting breakpoints by function name
+
+```bash
+xtensa-esp32-elf-gdb firmware.elf \
+  -ex "target extended-remote 192.168.0.87:3333" \
+  -ex "break RadioController::getRSSI" \
+  -ex "continue"
+```
+
+### Batch mode (non-interactive)
+
+```bash
+xtensa-esp32-elf-gdb firmware.elf -batch \
+  -ex "target extended-remote 192.168.0.87:3333" \
+  -ex "monitor halt" \
+  -ex "break radio_controller.cpp:204" \
+  -ex "continue" \
+  -ex "bt" \
+  -ex "print myVar" \
+  -ex "delete breakpoints" \
+  -ex "continue"
+```
+
+### Mapping addresses to source (without GDB)
+
+```bash
+xtensa-esp32-elf-addr2line -e firmware.elf -f 0x400D8678
+# Output: function name + source file:line
+
+xtensa-esp32-elf-nm firmware.elf | grep functionName
+# Output: address of a function
+```
+
+### Hardware breakpoint limit
+
+ESP32 has **2 hardware breakpoints**. GDB uses these automatically for
+flash-resident code. If you need more, set breakpoints in RAM-resident
+code or use watchpoints.
+
+---
+
 ## Available Board Configs
 
 ```bash
