@@ -577,30 +577,19 @@ class TestAutoDebug:
 def _find_present_device(workbench):
     """Find the first present DUT (not a debug probe) and return its slot info.
 
-    Skips devices that are only debug probes (ESP-Prog / FTDI) by checking
-    for detected_chip or Espressif USB VID (303a).
+    Any present device that isn't a probe or HID-warning slot is a DUT.
+    This covers both native USB chips (VID 303a, ttyACM) and classic ESP32
+    boards with third-party USB-UART bridges (CP2102, CH340, ttyUSB).
     """
     devices = workbench.get_devices()
     for d in devices:
         if not d.get("present"):
             continue
-        # Skip debug probes (ESP-Prog)
         if d.get("is_probe"):
             continue
-        # Skip devices with HID warning (not flashable)
         if d.get("usb_warning"):
             continue
-        # Has a detected chip — definitely a DUT
-        if d.get("detected_chip") or d.get("debug_chip"):
-            return d
-        # Check USB devices for Espressif VID
-        for usb in d.get("usb_devices", []):
-            if usb.get("vid_pid", "").startswith("303a:"):
-                return d
-        # Check if devnode is ttyACM (Espressif native USB) vs ttyUSB (FTDI)
-        devnode = d.get("devnode", "")
-        if "ttyACM" in devnode:
-            return d
+        return d
     return None
 
 
