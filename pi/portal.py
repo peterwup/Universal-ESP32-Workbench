@@ -1498,7 +1498,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
-        if path == "/api/udplog":
+        if path == "/api/log":
+            activity_log.clear()
+            self._send_json({"ok": True})
+        elif path == "/api/udplog":
             _udp_log.clear()
             self._send_json({"ok": True})
         elif path == "/api/firmware/delete":
@@ -3095,9 +3098,12 @@ async function enterPortal() {
     setTimeout(() => { btn.disabled = false; btn.textContent = 'Enter Captive Portal'; }, 30000);
 }
 
-function clearLog() {
+async function clearLog() {
     document.getElementById('log-entries').innerHTML = '';
-    lastLogTs = '';
+    try {
+        await fetch('/api/log', { method: 'DELETE' });
+    } catch (e) { /* ignore */ }
+    lastLogTs = new Date().toISOString();
 }
 
 async function releaseSlot(label) {
