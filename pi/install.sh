@@ -75,6 +75,7 @@ fi
 echo "Creating directories..."
 mkdir -p /etc/rfc2217
 mkdir -p /var/lib/rfc2217/firmware
+mkdir -p /var/lib/rfc2217/ppk2
 mkdir -p /tmp/wifi-tester
 
 # ---------------------------------------------------------------------------
@@ -89,11 +90,16 @@ cp "$SCRIPT_DIR/cw_beacon.py"              /usr/local/bin/cw_beacon.py
 cp "$SCRIPT_DIR/debug_controller.py"       /usr/local/bin/debug_controller.py
 cp "$SCRIPT_DIR/mqtt_controller.py"         /usr/local/bin/mqtt_controller.py
 cp "$SCRIPT_DIR/sniffer.py"                 /usr/local/bin/sniffer.py
+cp "$SCRIPT_DIR/ppk2_controller.py"         /usr/local/bin/ppk2_controller.py
+cp "$SCRIPT_DIR/ppk2_device.py"             /usr/local/bin/ppk2_device.py
+cp "$SCRIPT_DIR/ppk2_format.py"             /usr/local/bin/ppk2_format.py
+cp "$SCRIPT_DIR/ppk2_cli.py"               /usr/local/bin/ppk2_cli.py
 cp "$SCRIPT_DIR/rfc2217-learn-slots"        /usr/local/bin/rfc2217-learn-slots
 
 chmod +x /usr/local/bin/rfc2217-portal
 chmod +x /usr/local/bin/plain_rfc2217_server.py
 chmod +x /usr/local/bin/rfc2217-learn-slots
+chmod +x /usr/local/bin/ppk2_cli.py
 
 # ---------------------------------------------------------------------------
 # 5. Install helper scripts
@@ -137,6 +143,11 @@ cat > /etc/udev/rules.d/60-openocd.rules << 'RULES'
 ATTRS{idVendor}=="303a", MODE="0666", GROUP="plugdev"
 # FTDI devices (ESP-Prog, FT2232H, FT232H)
 ATTRS{idVendor}=="0403", MODE="0666", GROUP="plugdev"
+RULES
+
+# PPK2 udev rule (Nordic Power Profiler Kit II, VID 0x1915 PID 0xC00A)
+cat > /etc/udev/rules.d/99-ppk2.rules << 'RULES'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="c00a", MODE="0666", GROUP="plugdev", TAG+="uaccess"
 RULES
 
 systemctl daemon-reload
