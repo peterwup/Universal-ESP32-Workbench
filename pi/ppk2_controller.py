@@ -12,11 +12,15 @@ import time
 from datetime import datetime
 
 try:
+    import serial
     from ppk2_device import PPK2Device, find_ppk2_port
     from ppk2_format import FoldingBuffer, write_ppk2_file
     _ppk2_available = True
+    _serial_exception = serial.SerialException
 except ImportError:
+    serial = None  # type: ignore[assignment]
     _ppk2_available = False
+    _serial_exception = OSError  # fallback when pyserial not installed
 
 # Native PPK2 hardware sample rate (fixed at 100 kHz)
 NATIVE_SAMPLE_RATE = 100_000
@@ -186,9 +190,16 @@ class PPK2Controller:
         Returns *None* if the filename contains path-traversal sequences or
         the file does not exist.
         """
-        if ".." in filename or "/" in filename or not filename.endswith(".ppk2"):
+        # os.path.basename strips any leading directory components from
+        # user-supplied input, preventing path-traversal attacks.
+        safe_name = os.path.basename(filename)
+        if not safe_name or not safe_name.endswith(".ppk2"):
             return None
-        fpath = os.path.join(PPK2_FILES_DIR, filename)
+        fpath = os.path.join(PPK2_FILES_DIR, safe_name)
+        # Double-check the resolved path is still inside PPK2_FILES_DIR.
+        base = os.path.abspath(PPK2_FILES_DIR)
+        if not os.path.abspath(fpath).startswith(base + os.sep):
+            return None
         return fpath if os.path.isfile(fpath) else None
 
     def list_files(self) -> list[dict]:
@@ -235,10 +246,14 @@ class PPK2Controller:
     ) -> None:
         try:
             self._record(filepath, duration, sample_rate, mode, vdd, port)
-        except Exception as exc:  # noqa: BLE001
+        except (_serial_exception, IOError, OSError, RuntimeError) as exc:
             with self._lock:
                 self._state = "error"
                 self._error = str(exc)
+        except Exception as exc:  # noqa: BLE001 – unexpected errors must not crash the thread
+            with self._lock:
+                self._state = "error"
+                self._error = f"Unexpected error: {exc}"
 
     def _record(
         self,

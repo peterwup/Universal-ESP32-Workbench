@@ -2772,11 +2772,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             fsize = os.path.getsize(fpath)
+            # Use the basename of the validated fpath for the response header
+            # to avoid HTTP response splitting via user-controlled input.
+            safe_filename = os.path.basename(fpath)
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Length", fsize)
             self.send_header(
-                "Content-Disposition", f'attachment; filename="{filename}"'
+                "Content-Disposition", f'attachment; filename="{safe_filename}"'
             )
             self.end_headers()
             with open(fpath, "rb") as f:

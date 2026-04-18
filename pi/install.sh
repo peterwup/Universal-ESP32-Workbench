@@ -99,6 +99,7 @@ cp "$SCRIPT_DIR/rfc2217-learn-slots"        /usr/local/bin/rfc2217-learn-slots
 chmod +x /usr/local/bin/rfc2217-portal
 chmod +x /usr/local/bin/plain_rfc2217_server.py
 chmod +x /usr/local/bin/rfc2217-learn-slots
+chmod +x /usr/local/bin/ppk2_cli.py
 
 # ---------------------------------------------------------------------------
 # 5. Install helper scripts
