@@ -26,6 +26,11 @@ try:
     import ble_controller
 except ImportError:
     ble_controller = None
+try:
+    import ppk2_controller as _ppk2_mod
+    _ppk2 = _ppk2_mod.PPK2Controller()
+except ImportError:
+    _ppk2 = None
 
 PORT = 8080
 CONFIG_FILE = os.environ.get("RFC2217_CONFIG", "/etc/rfc2217/workbench.json")
@@ -1415,6 +1420,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/cw/frequencies":
             qs = parse_qs(parsed.query)
             self._handle_cw_frequencies(qs)
+        elif path == "/api/ppk2/status":
+            self._handle_ppk2_status()
+        elif path == "/api/ppk2/files":
+            self._handle_ppk2_list_files()
+        elif path.startswith("/api/ppk2/download/"):
+            self._handle_ppk2_download(path)
         elif path == "/api/udplog":
             qs = parse_qs(parsed.query)
             self._handle_get_udplog(qs)
@@ -1483,6 +1494,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_cw_start()
         elif path == "/api/cw/stop":
             self._handle_cw_stop()
+        elif path == "/api/ppk2/measure":
+            self._handle_ppk2_measure()
+        elif path == "/api/ppk2/stop":
+            self._handle_ppk2_stop()
         elif path == "/api/firmware/upload":
             self._handle_firmware_upload()
         elif path == "/api/ble/scan":
@@ -1506,6 +1521,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         elif path == "/api/firmware/delete":
             self._handle_firmware_delete()
+        elif path == "/api/ppk2/file":
+            self._handle_ppk2_delete_file()
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -2688,6 +2705,106 @@ class Handler(http.server.BaseHTTPRequestHandler):
         high = int(qs.get("high", [4_000_000])[0])
         freqs = _cw_beacon.list_frequencies(low, high)
         self._send_json({"ok": True, "frequencies": freqs})
+
+    # -- PPK2 power measurement handlers --
+
+    def _handle_ppk2_measure(self):
+        if _ppk2 is None:
+            self._send_json({"ok": False, "error": "ppk2_controller not available"}, 501)
+            return
+        body = self._read_json() or {}
+        duration = float(body.get("duration", 10.0))
+        sample_rate = int(body.get("sample_rate", 100_000))
+        mode = body.get("mode", "source")
+        vdd = int(body.get("vdd", 3300))
+        port = body.get("port", None)
+        if mode not in ("source", "ampere"):
+            self._send_json({"ok": False, "error": "mode must be 'source' or 'ampere'"}, 400)
+            return
+        result = _ppk2.start(
+            duration=duration,
+            sample_rate=sample_rate,
+            mode=mode,
+            vdd=vdd,
+            port=port,
+        )
+        if result.get("ok"):
+            log_activity(
+                f"ppk2.measure(duration={duration}s, rate={sample_rate}Hz, "
+                f"mode={mode}, vdd={vdd}mV) → {result.get('filename')}",
+                "ok",
+            )
+        self._send_json(result)
+
+    def _handle_ppk2_stop(self):
+        if _ppk2 is None:
+            self._send_json({"ok": False, "error": "ppk2_controller not available"}, 501)
+            return
+        result = _ppk2.stop()
+        log_activity("ppk2.stop()", "info")
+        self._send_json(result)
+
+    def _handle_ppk2_status(self):
+        if _ppk2 is None:
+            self._send_json({"ok": False, "error": "ppk2_controller not available"}, 501)
+            return
+        self._send_json({"ok": True, **_ppk2.status()})
+
+    def _handle_ppk2_list_files(self):
+        if _ppk2 is None:
+            self._send_json({"ok": False, "error": "ppk2_controller not available"}, 501)
+            return
+        self._send_json({"ok": True, "files": _ppk2.list_files()})
+
+    def _handle_ppk2_download(self, path):
+        # path = /api/ppk2/download/<filename>
+        parts = path.split("/")
+        if len(parts) != 5:
+            self._send_json({"error": "invalid path – expected /api/ppk2/download/<filename>"}, 400)
+            return
+        filename = parts[4]
+        if _ppk2 is None:
+            self._send_json({"error": "ppk2_controller not available"}, 501)
+            return
+        fpath = _ppk2.file_path(filename)
+        if fpath is None:
+            self._send_json({"error": "file not found"}, 404)
+            return
+        try:
+            fsize = os.path.getsize(fpath)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", fsize)
+            self.send_header(
+                "Content-Disposition", f'attachment; filename="{filename}"'
+            )
+            self.end_headers()
+            with open(fpath, "rb") as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except BrokenPipeError:
+            pass
+
+    def _handle_ppk2_delete_file(self):
+        if _ppk2 is None:
+            self._send_json({"ok": False, "error": "ppk2_controller not available"}, 501)
+            return
+        body = self._read_json()
+        if not body:
+            self._send_json({"ok": False, "error": "empty body"}, 400)
+            return
+        filename = body.get("filename", "")
+        if not filename:
+            self._send_json({"ok": False, "error": "missing filename"}, 400)
+            return
+        if _ppk2.delete_file(filename):
+            log_activity(f"ppk2.delete({filename})", "info")
+            self._send_json({"ok": True})
+        else:
+            self._send_json({"ok": False, "error": "file not found"}, 404)
 
     def _serve_ui(self):
         html = _UI_HTML

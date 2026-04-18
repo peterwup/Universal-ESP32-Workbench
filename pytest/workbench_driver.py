@@ -446,6 +446,162 @@ class WorkbenchDriver:
             f"/api/cw/frequencies?low={low}&high={high}")
         return result.get("frequencies", [])
 
+    # ── PPK2 power measurement ────────────────────────────────────────
+
+    def ppk2_measure(
+        self,
+        duration: float = 10.0,
+        sample_rate: int = 100_000,
+        mode: str = "source",
+        vdd: int = 3300,
+        port: Optional[str] = None,
+    ) -> dict:
+        """Start a PPK2 background recording.
+
+        Returns immediately.  Poll :meth:`ppk2_status` until
+        ``state == "done"`` then call :meth:`ppk2_download` to retrieve
+        the file.
+
+        Args:
+            duration:    Recording length in seconds (default 10).
+            sample_rate: Output sample rate in Hz; must divide evenly into
+                         100 000 (default 100 000 = full native rate).
+            mode:        ``"source"`` – PPK2 powers the DUT via internal SMU.
+                         ``"ampere"`` – external power, PPK2 measures only.
+            vdd:         Supply voltage in mV for source mode (default 3300).
+            port:        Serial port path (e.g. ``/dev/ttyACM0``).
+                         Auto-detected if omitted.
+
+        Returns:
+            dict with ``state``, ``filename``, and optional ``error``.
+        """
+        body: dict = {
+            "duration": duration,
+            "sample_rate": sample_rate,
+            "mode": mode,
+            "vdd": vdd,
+        }
+        if port is not None:
+            body["port"] = port
+        return self._api_post("/api/ppk2/measure", body, timeout=15)
+
+    def ppk2_status(self) -> dict:
+        """GET /api/ppk2/status — current recording state.
+
+        Returns:
+            dict with keys: ``state`` (idle|measuring|done|error),
+            ``filename``, ``elapsed``, ``duration``, ``samples``,
+            ``data_loss``, ``error``.
+        """
+        return self._api_get("/api/ppk2/status", timeout=10)
+
+    def ppk2_stop(self) -> dict:
+        """POST /api/ppk2/stop — stop a running recording early.
+
+        The partial recording is written to disk and can be downloaded.
+        """
+        return self._api_post("/api/ppk2/stop", timeout=10)
+
+    def ppk2_list_files(self) -> list[dict]:
+        """GET /api/ppk2/files — list stored .ppk2 files on the workbench.
+
+        Returns:
+            list of ``{filename, size, mtime}`` dicts.
+        """
+        result = self._api_get("/api/ppk2/files", timeout=10)
+        return result.get("files", [])
+
+    def ppk2_download(self, filename: str) -> bytes:
+        """GET /api/ppk2/download/<filename> — download a .ppk2 file.
+
+        Args:
+            filename: Filename returned by :meth:`ppk2_measure` or
+                      :meth:`ppk2_list_files`.
+
+        Returns:
+            Raw bytes of the .ppk2 ZIP archive.
+        """
+        url = f"{self.base_url}/api/ppk2/download/{filename}"
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read()
+        except urllib.error.URLError as e:
+            raise CommandTimeout(f"GET /api/ppk2/download/{filename}: {e}")
+        except Exception as e:
+            raise CommandTimeout(f"GET /api/ppk2/download/{filename}: {e}")
+
+    def ppk2_delete_file(self, filename: str) -> dict:
+        """DELETE /api/ppk2/file — delete a stored .ppk2 file."""
+        url = f"{self.base_url}/api/ppk2/file"
+        data_bytes = json.dumps({"filename": filename}).encode()
+        req = urllib.request.Request(
+            url, data=data_bytes,
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            raise CommandTimeout(f"DELETE /api/ppk2/file: {e}")
+
+    def ppk2_record(
+        self,
+        duration: float = 10.0,
+        sample_rate: int = 100_000,
+        mode: str = "source",
+        vdd: int = 3300,
+        port: Optional[str] = None,
+        poll_interval: float = 1.0,
+    ) -> bytes:
+        """High-level helper: start recording, wait for completion, return file bytes.
+
+        Blocks until the recording finishes (or raises on error).
+
+        Args:
+            duration:      Recording length in seconds.
+            sample_rate:   Output sample rate in Hz.
+            mode:          ``"source"`` or ``"ampere"``.
+            vdd:           Supply voltage in mV (source mode).
+            port:          Serial port path; auto-detected if omitted.
+            poll_interval: Status poll interval in seconds (default 1).
+
+        Returns:
+            Raw .ppk2 file bytes.
+
+        Raises:
+            CommandError: If the measurement fails on the device.
+            TimeoutError: If the recording does not complete within
+                          duration + 60 s.
+        """
+        result = self.ppk2_measure(
+            duration=duration,
+            sample_rate=sample_rate,
+            mode=mode,
+            vdd=vdd,
+            port=port,
+        )
+        filename = result.get("filename")
+        if not filename:
+            raise CommandError("ppk2_measure", result)
+
+        deadline = time.monotonic() + duration + 60
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"PPK2 recording did not finish within {duration + 60:.0f}s"
+                )
+            time.sleep(poll_interval)
+            status = self.ppk2_status()
+            state = status.get("state", "unknown")
+            if state == "done":
+                break
+            if state == "error":
+                raise CommandError("ppk2_record", status)
+
+        return self.ppk2_download(filename)
+
     # ── GDB debug ─────────────────────────────────────────────────────
 
     def debug_start(self, slot: str = None, chip: str = None,
